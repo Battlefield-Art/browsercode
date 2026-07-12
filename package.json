@@ -58,7 +58,7 @@
       "@solid-primitives/storage": "4.3.3",
       "@tailwindcss/vite": "4.1.11",
       "diff": "8.0.2",
-      "dompurify": "3.3.1",
+      "dompurify": "3.4.11",
       "drizzle-kit": "1.0.0-rc.2",
       "drizzle-orm": "1.0.0-rc.2",
       "effect": "4.0.0-beta.74",
@@ -81,7 +81,7 @@
       "shiki": "4.2.0",
       "solid-list": "0.3.0",
       "tailwindcss": "4.1.11",
-      "vite": "7.1.4",
+      "vite": "7.3.6",
       "@solidjs/meta": "0.29.4",
       "@solidjs/router": "0.15.4",
       "@solidjs/start": "https://pkg.pr.new/@solidjs/start@dfb2020",
@@ -104,7 +104,7 @@
     "prettier": "3.6.2",
     "semver": "^7.6.0",
     "sst": "catalog:",
-    "turbo": "2.8.13"
+    "turbo": "2.10.4"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.933.0",
@@ -138,7 +138,13 @@
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",
     "@types/bun": "catalog:",
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "postcss": "8.5.16",
+    "tar": "7.5.19",
+    "@opentelemetry/core": "2.9.0",
+    "@opentelemetry/sdk-trace-base": "2.9.0",
+    "@opentelemetry/resources": "2.9.0",
+    "@opentelemetry/sdk-trace-node": "2.9.0"
   },
   "patchedDependencies": {
     "@ff-labs/fff-bun@0.9.3": "patches/@ff-labs%2Ffff-bun@0.9.3.patch",
