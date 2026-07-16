@@ -16,6 +16,11 @@ export default defineConfig({
   output: "server",
   adapter: cloudflare({
     imageService: "passthrough",
+    // Forward SST's generated Wrangler config to the adapter. SST's
+    // `cloudflare.x.Astro` component sets SST_WRANGLER_PATH during deploy/dev;
+    // when unset (plain `astro build`) this is undefined and the adapter falls
+    // back to its default config detection.
+    configPath: process.env.SST_WRANGLER_PATH,
     // @astrojs/cloudflare v13 defaults to prerendering in the workerd runtime,
     // which lacks Node built-ins (path/fs/url) that Astro/Zod internals import.
     // Prerender in Node instead, matching the previous (v12) behavior.
