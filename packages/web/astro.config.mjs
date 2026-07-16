@@ -16,6 +16,10 @@ export default defineConfig({
   output: "server",
   adapter: cloudflare({
     imageService: "passthrough",
+    // @astrojs/cloudflare v13 defaults to prerendering in the workerd runtime,
+    // which lacks Node built-ins (path/fs/url) that Astro/Zod internals import.
+    // Prerender in Node instead, matching the previous (v12) behavior.
+    prerenderEnvironment: "node",
   }),
   devToolbar: {
     enabled: false,
