@@ -188,21 +188,42 @@ export class Session implements Transport {
     };
   }
 
-  /** Wait for the next event matching `method` (and optional predicate). */
-  waitFor<T = unknown>(method: string, predicate?: (params: T) => boolean, timeoutMs = 30_000): Promise<T> {
-    return new Promise((resolve, reject) => {
+  /**
+   * Wait for the next event matching `method` (and optional predicate).
+   * Register the waiter before the call that triggers the event:
+   *   const loaded = session.waitFor("Page.loadEventFired", { timeoutMs: 15_000 })
+   *   await session.Page.navigate({ url })
+   *   await loaded
+   */
+  waitFor<T = unknown>(method: string, opts: { predicate?: (params: T) => boolean; timeoutMs?: number } = {}): Promise<T> {
+    if (typeof opts === 'function') {
+      throw new TypeError('waitFor(method, { predicate, timeoutMs }) — pass the predicate in the options object');
+    }
+    const p = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         unsub();
         reject(new Error(`Timeout waiting for ${method}`));
-      }, timeoutMs);
+      }, opts.timeoutMs ?? 30_000);
       const unsub = this.onEvent((m, params) => {
         if (m !== method) return;
-        if (predicate && !predicate(params as T)) return;
+        try {
+          if (opts.predicate && !opts.predicate(params as T)) return;
+        } catch (e) {
+          clearTimeout(timer);
+          unsub();
+          reject(e);
+          return;
+        }
         clearTimeout(timer);
         unsub();
         resolve(params as T);
       });
     });
+    // Pre-observe so an abandoned waiter (snippet returned or threw before
+    // awaiting it) times out without an unhandled rejection. Awaiting
+    // callers still see the rejection.
+    p.catch(() => {});
+    return p;
   }
 
   // Transport implementation. Called by the generated domain bindings.

@@ -113,10 +113,12 @@ For unknown param shapes, call with `{}` and inspect the thrown `CdpError` — `
 Common moves:
 
 ```js
-// Navigate.
+// Navigate. Register the load waiter BEFORE navigate so a fast load isn't missed.
 await session.Page.enable()
+const loaded = session.waitFor("Page.loadEventFired", { timeoutMs: 15_000 })
 await session.Page.navigate({ url: "https://example.com" })
-await session.waitFor("Page.loadEventFired")
+await loaded
+// Page.navigate resolves even on network errors — its result carries `errorText` when the load failed.
 
 // Evaluate JS in the page.
 const r = await session.Runtime.evaluate({
@@ -153,8 +155,9 @@ export async function scrapeTitles(session: any, urls: string[]) {
   const titles: string[] = []
   await session.Page.enable()
   for (const url of urls) {
+    const loaded = session.waitFor("Page.loadEventFired", { timeoutMs: 15_000 })
     await session.Page.navigate({ url })
-    await session.waitFor("Page.loadEventFired")
+    await loaded
     const r = await session.Runtime.evaluate({ expression: "document.title", returnByValue: true })
     titles.push(r.result.value)
   }
