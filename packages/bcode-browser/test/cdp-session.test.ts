@@ -64,3 +64,16 @@ test("waitFor throws synchronously on the removed positional-predicate form", ()
   // @ts-expect-error old signature: waitFor(method, predicate, timeoutMs)
   expect(() => session.waitFor("Test.positional", () => true, 1_000)).toThrow(TypeError)
 })
+
+test("waitFor throws on a positional timeout rather than silently using the 30s default", async () => {
+  // The whole point of this change is removing a silent 30s stall, so the one
+  // remaining positional shape — an omitted predicate with a third-argument
+  // timeout — must not quietly fall back to the default.
+  // @ts-expect-error old signature: waitFor(method, undefined, timeoutMs)
+  expect(() => session.waitFor("Test.positionalTimeout", undefined, 50)).toThrow(TypeError)
+
+  // And the supported form still honours the timeout it was given.
+  const started = Date.now()
+  await expect(session.waitFor("Test.never", { timeoutMs: 50 })).rejects.toThrow(/Timeout waiting for/)
+  expect(Date.now() - started).toBeLessThan(1_000)
+})
