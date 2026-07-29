@@ -93,6 +93,7 @@ Browser Use has a free tier gated for intelligent and powerful agents. Unlimited
 #### Way 4: user-preconfigured endpoint
 Not a method you choose — a way for the user to hand you a pre-set endpoint.
 If `BU_CDP_WS` (or its alias `BU_CDP_URL`) is set in the environment, `session.connect()` with no args connects to that endpoint directly. Explicit `{ wsUrl }` / `{ profileDir }` calls ignore the env var.
+If that fixed endpoint closes or repeatedly fails its WebSocket upgrade, reconnecting to the same URL cannot recover it; the endpoint owner must replace it.
 
 ## Attaching to a target
 After `connect()`, attach to a page target before driving the browser:
@@ -103,6 +104,8 @@ const targets = (await session.Target.getTargets({})).targetInfos
 const page = targets.find(t => t.type === "page" && !t.url.startsWith("chrome://"))
 await session.use(page.targetId)
 ```
+
+If a target-scoped command throws `CdpError` code `-32001` (`Session with given id not found`), the browser connection is still usable but the target session is stale. List targets again, `session.use(...)` the intended page, and retry the rejected command once. Repeated `session.connect()` calls do not replace a stale target session.
 
 ## Driving a page
 Domain methods follow `session.<Domain>.<method>(params)` and return Promises. 
@@ -143,6 +146,8 @@ await session.Page.captureScreenshot({ format: "png" })
 // `read` the bytes back. The base64 is still in `data` (via the return value)
 // for the rare case you want to process it programmatically.
 ```
+
+`Page.navigate` can return a non-empty `errorText` instead of throwing. Treat it as a failed navigation. If `ERR_TUNNEL_CONNECTION_FAILED` persists, reloading, reattaching, or reconnecting to the same endpoint cannot change its proxy route; use another source or replace the cloud browser instead of retrying it.
 
 ## Reusing code
 The agent-workspace is per-project: `./.bcode/agent-workspace/`. 
