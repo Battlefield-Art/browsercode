@@ -149,6 +149,21 @@ await session.Page.captureScreenshot({ format: "png" })
 
 `Page.navigate` can return a non-empty `errorText` instead of throwing. Treat it as a failed navigation. If `ERR_TUNNEL_CONNECTION_FAILED` persists, reloading, reattaching, or reconnecting to the same endpoint cannot change its proxy route; use another source or replace the cloud browser instead of retrying it.
 
+Not auto-attaching a screenshot: attachment is keyed on the `Page.captureScreenshot` response; pixels that arrive as an event are never attached.
+
+```js
+await session.Page.enable()
+// Optional: screencast has no `clip`, so override the viewport for exact frame size.
+await session.Emulation.setDeviceMetricsOverride({ width: 1200, height: 630, deviceScaleFactor: 1, mobile: false })
+const frame = session.waitFor("Page.screencastFrame", { timeoutMs: 10_000 })  // register first
+await session.Page.startScreencast({ format: "png" })
+try {
+  const f = await frame        // f.data is base64, same as captureScreenshot
+} finally {
+  await session.Page.stopScreencast()   // otherwise the cast stays open
+}
+```
+
 ## Reusing code
 The agent-workspace is per-project: `./.bcode/agent-workspace/`. 
 Use this to write memory files, scripts, and helper functions.
