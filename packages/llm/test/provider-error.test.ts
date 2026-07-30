@@ -13,6 +13,7 @@ describe("provider error classification", () => {
       "Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens",
       "Too many tokens",
       "Token limit exceeded",
+      "Too many images were provided, we currently limit the number of images per conversation to 60",
     ]
 
     expect(messages.every(isContextOverflow)).toBe(true)
