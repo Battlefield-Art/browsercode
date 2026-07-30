@@ -77,3 +77,30 @@ test("waitFor throws on a positional timeout rather than silently using the 30s 
   await expect(session.waitFor("Test.never", { timeoutMs: 50 })).rejects.toThrow(/Timeout waiting for/)
   expect(Date.now() - started).toBeLessThan(1_000)
 })
+
+// Retirement guarantee under in-flight connects: an invalidation landing
+// while connect() is between awaits must not leave a usable or open socket.
+test("invalidate before the socket exists rejects the in-flight connect", async () => {
+  const s = new Session()
+  // connect() awaits resolveWsUrl before openWs, so invalidate() runs while
+  // no socket exists yet — openWs must refuse to create one afterwards.
+  const connecting = s.connect({ wsUrl: `ws://127.0.0.1:${server.port}/`, timeoutMs: 1_000 })
+  s.invalidate(new Error("retired by test"))
+  await expect(connecting).rejects.toThrow("retired by test")
+  expect(s.isConnected()).toBe(false)
+})
+
+test("invalidate while the socket is connecting closes it and rejects", async () => {
+  const s = new Session()
+  const connecting = s.connect({ wsUrl: `ws://127.0.0.1:${server.port}/`, timeoutMs: 1_000 })
+  // Yield one macrotask so openWs has created the WebSocket, then retire.
+  await Bun.sleep(0)
+  s.invalidate(new Error("retired by test"))
+  // Depending on whether the open event won the race, connect either rejects
+  // or resolved just before retirement — in both cases the Session must end
+  // dead with no usable transport.
+  await connecting.catch(() => {})
+  expect(s.isConnected()).toBe(false)
+  await expect(s._call("Runtime.evaluate", { expression: "1" })).rejects.toThrow("retired by test")
+  await expect(s.connect({ wsUrl: `ws://127.0.0.1:${server.port}/` })).rejects.toThrow("retired by test")
+})

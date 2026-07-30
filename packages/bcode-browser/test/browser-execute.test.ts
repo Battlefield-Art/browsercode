@@ -288,6 +288,51 @@ test("console capture and onChunk stop after timeout", async () => {
   await SessionStore.evict("timeout-capture-test")
 })
 
+test("re-running the execute effect after a timeout gets fresh state", async () => {
+  const data = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-rerun-"))
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-rerun-ws-"))
+  const impl = await Effect.runPromise(BrowserExecute.make(data))
+  // One Effect value, run twice. Each run must resolve its own Session and
+  // capture buffer — the second run's error must carry its own partial
+  // output, not inherit the first run's frozen capture or retired Session.
+  // onChunk deliveries discriminate: a run that inherited a frozen capture
+  // buffer never tees, so it produces zero chunks (the frozen buffer still
+  // *contains* run 1's text, which is why asserting on the error message
+  // alone cannot catch this).
+  const chunks: string[] = []
+  const eff = impl.execute(
+    {
+      description: "rerun test",
+      code: `console.log("progress-marker");
+             await new Promise((r) => setTimeout(r, 60_000));`,
+      timeout: 100,
+    },
+    { sessionID: "rerun-test", workspaceDir: ws, onChunk: (o) => Effect.sync(() => { chunks.push(o) }) },
+  )
+  const run = () => Effect.runPromise(eff).then(() => "resolved", (e: unknown) => String(e))
+  const first = await run()
+  const afterFirst = chunks.length
+  const second = await run()
+  expect(first).toContain("progress-marker")
+  expect(second).toContain("progress-marker")
+  expect(afterFirst).toBeGreaterThan(0)
+  expect(chunks.length).toBeGreaterThan(afterFirst)
+  await SessionStore.evict("rerun-test")
+  await Promise.all([data, ws].map((d) => fs.rm(d, { recursive: true, force: true })))
+})
+
+test("invalidate retires the expected Session even after replacement", async () => {
+  const id = "invalidate-replaced-test"
+  const s1 = SessionStore.get(id)
+  await SessionStore.evict(id)
+  const s2 = SessionStore.get(id)
+  SessionStore.invalidate(id, s1, new Error("retired stale session"))
+  // The successor entry is untouched, but the stale object is still dead.
+  expect(SessionStore.get(id)).toBe(s2)
+  await expect(s1.connect({ wsUrl: "ws://127.0.0.1:9/nope" })).rejects.toThrow(/retired stale session/)
+  await SessionStore.evict(id)
+})
+
 test("timeout output is tail-capped to valid UTF-8", async () => {
   // ~25 KiB of multibyte lines, all logged before the sleep.
   const err = await runTimeout(

@@ -105,6 +105,7 @@ export class Session implements Transport {
         await this.openWs(b.wsUrl, timeoutMs);
         return;
       } catch (e) {
+        if (this.invalidatedError) throw this.invalidatedError;
         const msg = e instanceof Error ? e.message : String(e);
         errors.push(`  ${b.name} @ ${b.wsUrl}: ${msg}`);
       }
@@ -115,6 +116,10 @@ export class Session implements Transport {
   }
 
   private openWs(wsUrl: string, timeoutMs: number): Promise<void> {
+    // Re-checked here (not only in connect) because connect awaits resolver/
+    // detection steps first — an invalidation landing during those must not
+    // open a late socket for a retired Session.
+    if (this.invalidatedError) return Promise.reject(this.invalidatedError);
     return new Promise<void>((res, rej) => {
       const ws = new WebSocket(wsUrl);
       let done = false;
@@ -126,13 +131,13 @@ export class Session implements Transport {
         else res();
       };
       const timer = setTimeout(() => finish(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
-      ws.addEventListener('open', () => finish());
+      ws.addEventListener('open', () => finish(this.invalidatedError));
       ws.addEventListener('error', (e) => finish(new Error(`WS error: ${(e as any)?.message ?? 'connect failed (likely 403, permission not granted, or port closed)'}`)));
       ws.addEventListener('message', (e) => this.onMessage(String(e.data)));
       ws.addEventListener('close', () => {
-        for (const [, p] of this.pending) p.reject(new Error('CDP socket closed'));
+        for (const [, p] of this.pending) p.reject(this.invalidatedError ?? new Error('CDP socket closed'));
         this.pending.clear();
-        finish(new Error('WS closed before open (likely 403 or port closed)'));
+        finish(this.invalidatedError ?? new Error('WS closed before open (likely 403 or port closed)'));
       });
       this.ws = ws;
     });

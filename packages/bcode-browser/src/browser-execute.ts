@@ -172,9 +172,12 @@ const serialize = (v: unknown): string => {
 export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string) {
   const skillsDir = yield* Effect.promise(() => Skills.resolveSkillsDir(dataDir))
 
-  const execute = (args: Parameters, ctx: ExecuteContext) => {
-    // Resolved outside the generator so the timeout handler below can retire
-    // the exact Session this snippet received and freeze its capture buffer.
+  // Effect values are re-runnable, so per-run state lives inside the suspend
+  // thunk: each run resolves its own Session (the timeout handler retires
+  // exactly that object) and its own capture buffer (a re-run after a timeout
+  // must not inherit a retired Session or a frozen capture).
+  const execute = (args: Parameters, ctx: ExecuteContext) =>
+    Effect.suspend(() => {
     const session = SessionStore.get(ctx.sessionID)
     const captured = { active: true, output: "" }
     const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
@@ -259,16 +262,17 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
                 .filter(Boolean)
                 .join("\n\n"),
             )
-            // Identity-checked: only removes the store entry if it still maps
-            // to this snippet's Session. A concurrent same-sessionID call
-            // would share the retired object — acceptable for v1, opencode
-            // serializes tool calls within an assistant message.
+            // Always retires this snippet's Session; the identity check
+            // inside only guards the store delete, so a successor Session is
+            // never evicted. A concurrent same-sessionID call would share the
+            // retired object — acceptable for v1, opencode serializes tool
+            // calls within an assistant message.
             SessionStore.invalidate(ctx.sessionID, session, error)
             return Effect.fail(error)
           }),
       }),
     )
-  }
+  })
 
   return { parameters, execute, skillsDir }
 })
