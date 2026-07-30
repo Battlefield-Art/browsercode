@@ -224,6 +224,130 @@ test("console.debug is captured; uncommon methods fall through without throwing"
   await Promise.all([data, ws].map((d) => fs.rm(d, { recursive: true, force: true })))
 })
 
+// Timeout isolation: a timed-out snippet keeps running as an orphan (JS
+// Promises are not preemptible), so the tool must retire the Session object
+// the snippet received and surface captured output in the error. No Chrome
+// required — the snippets sleep without touching the browser.
+const runTimeout = async (id: string, code: string, timeout: number, onChunk?: (o: string) => Effect.Effect<void>) => {
+  const data = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-to-"))
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-to-ws-"))
+  const err = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const impl = yield* BrowserExecute.make(data)
+        return yield* impl.execute(
+          { description: "timeout test", code, timeout },
+          { sessionID: id, workspaceDir: ws, onChunk },
+        )
+      }),
+    ),
+  ).then(
+    () => { throw new Error("expected timeout") },
+    (e: unknown) => String(e),
+  )
+  await Promise.all([data, ws].map((d) => fs.rm(d, { recursive: true, force: true })))
+  return err
+}
+
+test("timeout returns partial output and retires the session", async () => {
+  const id = "timeout-isolation-test"
+  const before = SessionStore.get(id)
+  const err = await runTimeout(
+    id,
+    `console.log("progress-marker");
+     await new Promise((r) => setTimeout(r, 60_000));`,
+    100,
+  )
+  expect(err).toContain("timed out after 100 ms")
+  expect(err).toContain("Partial console output before timeout:")
+  expect(err).toContain("progress-marker")
+  // The orphan's Session is permanently dead...
+  expect(before.isConnected()).toBe(false)
+  await expect(before.connect({ wsUrl: "ws://127.0.0.1:9/nope" })).rejects.toThrow(/timed out after 100 ms/)
+  await expect(before.domains.Runtime.evaluate({ expression: "1" })).rejects.toThrow(/timed out after 100 ms/)
+  // ...and the next tool call gets a fresh one.
+  expect(SessionStore.get(id)).not.toBe(before)
+  await SessionStore.evict(id)
+})
+
+test("console capture and onChunk stop after timeout", async () => {
+  const chunks: string[] = []
+  const err = await runTimeout(
+    "timeout-capture-test",
+    `console.log("early");
+     await new Promise((r) => setTimeout(r, 250));
+     console.log("late");`,
+    100,
+    (o) => Effect.sync(() => { chunks.push(o) }),
+  )
+  expect(err).toContain("early")
+  // Let the orphan's late log fire, then confirm it was not captured.
+  await new Promise((r) => setTimeout(r, 400))
+  expect(chunks.some((c) => c.includes("early"))).toBe(true)
+  expect(chunks.some((c) => c.includes("late"))).toBe(false)
+  await SessionStore.evict("timeout-capture-test")
+})
+
+test("re-running the execute effect after a timeout gets fresh state", async () => {
+  const data = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-rerun-"))
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-rerun-ws-"))
+  const impl = await Effect.runPromise(BrowserExecute.make(data))
+  // One Effect value, run twice. Each run must resolve its own Session and
+  // capture buffer — the second run's error must carry its own partial
+  // output, not inherit the first run's frozen capture or retired Session.
+  // onChunk deliveries discriminate: a run that inherited a frozen capture
+  // buffer never tees, so it produces zero chunks (the frozen buffer still
+  // *contains* run 1's text, which is why asserting on the error message
+  // alone cannot catch this).
+  const chunks: string[] = []
+  const eff = impl.execute(
+    {
+      description: "rerun test",
+      code: `console.log("progress-marker");
+             await new Promise((r) => setTimeout(r, 60_000));`,
+      timeout: 100,
+    },
+    { sessionID: "rerun-test", workspaceDir: ws, onChunk: (o) => Effect.sync(() => { chunks.push(o) }) },
+  )
+  const run = () => Effect.runPromise(eff).then(() => "resolved", (e: unknown) => String(e))
+  const first = await run()
+  const afterFirst = chunks.length
+  const second = await run()
+  expect(first).toContain("progress-marker")
+  expect(second).toContain("progress-marker")
+  expect(afterFirst).toBeGreaterThan(0)
+  expect(chunks.length).toBeGreaterThan(afterFirst)
+  await SessionStore.evict("rerun-test")
+  await Promise.all([data, ws].map((d) => fs.rm(d, { recursive: true, force: true })))
+})
+
+test("invalidate retires the expected Session even after replacement", async () => {
+  const id = "invalidate-replaced-test"
+  const s1 = SessionStore.get(id)
+  await SessionStore.evict(id)
+  const s2 = SessionStore.get(id)
+  SessionStore.invalidate(id, s1, new Error("retired stale session"))
+  // The successor entry is untouched, but the stale object is still dead.
+  expect(SessionStore.get(id)).toBe(s2)
+  await expect(s1.connect({ wsUrl: "ws://127.0.0.1:9/nope" })).rejects.toThrow(/retired stale session/)
+  await SessionStore.evict(id)
+})
+
+test("timeout output is tail-capped to valid UTF-8", async () => {
+  // ~25 KiB of multibyte lines, all logged before the sleep.
+  const err = await runTimeout(
+    "timeout-truncate-test",
+    `for (let i = 0; i < 300; i++) console.log("é".repeat(40) + "-line-" + i);
+     await new Promise((r) => setTimeout(r, 60_000));`,
+    100,
+  )
+  expect(err).toContain("[partial console output truncated; showing final bytes]")
+  expect(err).toContain("-line-299")
+  expect(err).not.toContain("-line-0\n")
+  expect(err).not.toContain("\uFFFD")
+  await SessionStore.evict("timeout-truncate-test")
+})
+
 // Concurrency safety: two overlapping execute() calls (different sessionIDs)
 // must each capture their own console output without leaking into each other
 // or into the real global console. No Chrome required — the snippets never

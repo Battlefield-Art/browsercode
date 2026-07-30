@@ -197,6 +197,7 @@ console.log(JSON.stringify(titles))
 ## Guardrails
 - Top-level `import` statements inside the snippet body are not allowed. Use `await import(...)` instead.
 - No CPU-bound infinite loops without `await` — they ignore the timeout. Insert `await new Promise(r => setTimeout(r, 0))` to yield.
+- `browser_execute` defaults to 60s (max 600s). For longer work, set the tool's top-level `timeout`; inner CDP timeouts do not extend it. Keep batches small and log progress — timeout errors return recent logs, and a timeout resets the CDP session (reconnect in the next snippet).
 
 ## Console
 - `console.log`, `console.error`, `console.warn`, `console.info`, `console.debug` are all captured and streamed to the user. Treat them as your stdout. Other `console.*` methods write to bcode's stderr without being captured into the tool result.

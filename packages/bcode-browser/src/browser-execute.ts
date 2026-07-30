@@ -32,10 +32,13 @@
 //
 // Cancellation: JS Promises are not preemptively cancellable. A snippet
 // without `await` yield-points (e.g. `for (let i = 0; i < 1e9; i++) {}`)
-// runs to completion before our timeout fiber observes it. `Effect.timeoutOrElse`
-// fails the surrounding fiber but the orphan Promise keeps running until it
-// finishes. This matches the `uv run` subprocess case (SIGTERM only after
-// the Python signal handler yields). Document, don't fix.
+// runs to completion before our timeout fiber observes it. When a yielding
+// snippet times out, its Promise keeps running as an orphan — so on timeout
+// we retire the exact Session object the snippet received (rejects future
+// connect/_call, closes the socket) and evict it from SessionStore. The
+// orphan can finish local work but cannot keep driving the browser, and the
+// next tool call gets a fresh Session instead of sharing a socket with it.
+// The timeout error carries the console output captured so far.
 //
 // Level 1 per decisions.md §1c — substantial implementation lives here. The
 // Level-2 hook in packages/opencode is a thin adapter.
@@ -48,6 +51,18 @@ import { Skills } from "./skills"
 
 const DEFAULT_TIMEOUT_MS = 60 * 1000
 const MAX_TIMEOUT_MS = 10 * 60 * 1000
+const MAX_TIMEOUT_OUTPUT_BYTES = 8 * 1024
+const TIMEOUT_OUTPUT_TRUNCATED = "[partial console output truncated; showing final bytes]\n"
+
+// Tail-cap the captured output for the timeout error: last 8 KiB, snapped
+// forward to a UTF-8 sequence start so multibyte characters survive the cut.
+const timeoutOutput = (output: string) => {
+  const bytes = Buffer.from(output, "utf8")
+  if (bytes.length <= MAX_TIMEOUT_OUTPUT_BYTES) return output
+  let start = bytes.length - (MAX_TIMEOUT_OUTPUT_BYTES - Buffer.byteLength(TIMEOUT_OUTPUT_TRUNCATED))
+  while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++
+  return TIMEOUT_OUTPUT_TRUNCATED + bytes.subarray(start).toString("utf8")
+}
 
 // Field order matters: providers stream tool-call args in schema-declared
 // order, so the model commits to whichever field comes first. `code` is the
@@ -157,9 +172,16 @@ const serialize = (v: unknown): string => {
 export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string) {
   const skillsDir = yield* Effect.promise(() => Skills.resolveSkillsDir(dataDir))
 
+  // Effect values are re-runnable, so per-run state lives inside the suspend
+  // thunk: each run resolves its own Session (the timeout handler retires
+  // exactly that object) and its own capture buffer (a re-run after a timeout
+  // must not inherit a retired Session or a frozen capture).
   const execute = (args: Parameters, ctx: ExecuteContext) =>
-    Effect.gen(function* () {
-      const session = SessionStore.get(ctx.sessionID)
+    Effect.suspend(() => {
+    const session = SessionStore.get(ctx.sessionID)
+    const captured = { active: true, output: "" }
+    const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
+    return Effect.gen(function* () {
       yield* Effect.promise(() => fs.mkdir(ctx.workspaceDir, { recursive: true }))
 
       const wrapped = yield* Effect.try({
@@ -167,10 +189,10 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
         catch: (err) => new Error(`syntax error in browser_execute snippet: ${err}`),
       })
 
-      let output = ""
       const tee = (...a: unknown[]) => {
-        output += a.map((x) => (typeof x === "string" ? x : serialize(x))).join(" ") + "\n"
-        if (ctx.onChunk) Effect.runFork(ctx.onChunk(output))
+        if (!captured.active) return
+        captured.output += a.map((x) => (typeof x === "string" ? x : serialize(x))).join(" ") + "\n"
+        if (ctx.onChunk) Effect.runFork(ctx.onChunk(captured.output))
       }
       // Prototype-chain to the real `console` so uncommon methods (`debug`,
       // `dir`, `trace`, `table`, `group`, …) don't throw when a snippet calls
@@ -223,14 +245,34 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
         catch: (err) => new Error(`browser_execute snippet threw: ${err instanceof Error ? err.stack ?? err.message : String(err)}`),
       }).pipe(Effect.ensuring(Effect.sync(() => unsubscribe())))
 
-      return { output, result: serialize(ran), screenshots } satisfies ExecuteResult
+      return { output: captured.output, result: serialize(ran), screenshots } satisfies ExecuteResult
     }).pipe(
       Effect.scoped,
       Effect.timeoutOrElse({
-        duration: Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
-        orElse: () => Effect.fail(new Error("browser_execute timed out")),
+        duration: timeout,
+        orElse: () =>
+          Effect.suspend(() => {
+            captured.active = false
+            const output = timeoutOutput(captured.output)
+            const error = new Error(
+              [
+                `browser_execute timed out after ${timeout} ms; CDP session was reset — reconnect in the next snippet`,
+                output.trim() ? `Partial console output before timeout:\n${output.trimEnd()}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            )
+            // Always retires this snippet's Session; the identity check
+            // inside only guards the store delete, so a successor Session is
+            // never evicted. A concurrent same-sessionID call would share the
+            // retired object — acceptable for v1, opencode serializes tool
+            // calls within an assistant message.
+            SessionStore.invalidate(ctx.sessionID, session, error)
+            return Effect.fail(error)
+          }),
       }),
     )
+  })
 
   return { parameters, execute, skillsDir }
 })
