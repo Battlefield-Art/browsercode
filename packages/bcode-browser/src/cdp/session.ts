@@ -43,6 +43,7 @@ export type DetectedBrowser = {
 
 export class Session implements Transport {
   private ws?: WebSocket;
+  private invalidatedError?: Error;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private activeSessionId: string | undefined;
@@ -79,6 +80,7 @@ export class Session implements Transport {
    * and we connect directly to the supplied endpoint.
    */
   async connect(opts: ConnectOptions = {}): Promise<void> {
+    if (this.invalidatedError) throw this.invalidatedError;
     const timeoutMs = opts.timeoutMs ?? 5_000;
     if (opts.wsUrl || opts.profileDir) {
       const wsUrl = await resolveWsUrl(opts, timeoutMs);
@@ -137,11 +139,31 @@ export class Session implements Transport {
   }
 
   isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return !this.invalidatedError && this.ws?.readyState === WebSocket.OPEN;
   }
 
   close(): void {
     this.ws?.close();
+  }
+
+  /**
+   * Permanently retire this Session object.
+   *
+   * `browser_execute` timeouts cannot preempt the snippet's Promise — the
+   * orphan keeps running and would otherwise share this object (and its
+   * socket) with the next tool call, interleaving two authors on one
+   * transport. Invalidation rejects all future `connect`/`_call` attempts
+   * and closes the socket (the close handler rejects in-flight calls);
+   * `SessionStore.invalidate` removes the entry so the next call gets a
+   * fresh Session.
+   */
+  invalidate(error: Error): void {
+    if (this.invalidatedError) return;
+    this.invalidatedError = error;
+    const ws = this.ws;
+    this.ws = undefined;
+    this.activeSessionId = undefined;
+    try { ws?.close(); } catch { /* ignore */ }
   }
 
   /**
@@ -239,6 +261,7 @@ export class Session implements Transport {
 
   // Transport implementation. Called by the generated domain bindings.
   _call(method: string, params: unknown = {}): Promise<unknown> {
+    if (this.invalidatedError) return Promise.reject(this.invalidatedError);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('Not connected. Call session.connect(...) first.'));
     }

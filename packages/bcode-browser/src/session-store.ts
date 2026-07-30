@@ -27,6 +27,16 @@ export const get = (sessionID: string): Session => {
   return fresh
 }
 
+// Retire a specific Session object after a browser_execute timeout. Identity-
+// checked so a stale caller can never evict a successor Session that a newer
+// call is already using.
+export const invalidate = (sessionID: string, expected: Session, error: Error): void => {
+  const entry = sessions.get(sessionID)
+  if (entry !== expected) return
+  sessions.delete(sessionID)
+  entry.invalidate(error)
+}
+
 export const evict = async (sessionID: string): Promise<void> => {
   const entry = sessions.get(sessionID)
   if (!entry) return
