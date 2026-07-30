@@ -1462,6 +1462,7 @@ describe("session.message-v2.fromError", () => {
       "Please reduce the length of the messages or completion",
       "400 status code (no body)",
       "413 status code (no body)",
+      "Too many images were provided, we currently limit the number of images per conversation to 60",
     ]
 
     cases.forEach((message) => {
