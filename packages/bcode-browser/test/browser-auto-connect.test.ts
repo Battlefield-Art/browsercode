@@ -7,6 +7,7 @@ import { BrowserExecute } from "../src/browser-execute";
 import { SessionStore } from "../src/session-store";
 
 let connections = 0;
+let closedConnections = 0;
 let attachedCalls = 0;
 let pageCallsWithSession = 0;
 let latestSocket: { close(): void } | undefined;
@@ -57,7 +58,9 @@ const server = Bun.serve({
       })();
       ws.send(JSON.stringify({ id: request.id, result }));
     },
-    close() {},
+    close() {
+      closedConnections++;
+    },
   },
 });
 
@@ -198,6 +201,7 @@ test("parallel first calls share one connection attempt", async () => {
 
 test("a dropped socket is surfaced instead of reconnecting the run-start browser", async () => {
   connections = 0;
+  closedConnections = 0;
   attachedCalls = 0;
   await withEnv(
     { V4_RUN_ID: "run-dropped", BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
@@ -222,7 +226,52 @@ test("a dropped socket is surfaced instead of reconnecting the run-start browser
         );
 
         expect(connections).toBe(1);
+        expect(closedConnections).toBe(1);
         expect(attachedCalls).toBe(1);
+      }),
+  );
+});
+
+test("an explicit browser switch retires the old socket and target attachment", async () => {
+  connections = 0;
+  closedConnections = 0;
+  attachedCalls = 0;
+  pageCallsWithSession = 0;
+  await withEnv(
+    { V4_RUN_ID: "run-switch", BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
+    () =>
+      withBrowserExecute("switch", async (impl, sessionID, workspaceDir) => {
+        const run = (code: string) =>
+          Effect.runPromise(
+            impl.execute(
+              { description: "Switch provisioned browsers", code },
+              { sessionID, workspaceDir },
+            ),
+          );
+
+        await run(
+          "return await session.Page.navigate({ url: 'https://sap.com' })",
+        );
+        const switched = await run(`
+          await session.connect({ wsUrl: ${JSON.stringify(wsUrl)} })
+          await session.Page.navigate({ url: "https://example.com" })
+          return { activeSession: session.getActiveSession() ?? null }
+        `);
+        expect(JSON.parse(switched.result)).toEqual({ activeSession: null });
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(connections).toBe(2);
+        expect(closedConnections).toBe(1);
+        expect(attachedCalls).toBe(1);
+        expect(pageCallsWithSession).toBe(1);
+
+        await run(`
+          const page = (await session.Target.getTargets({})).targetInfos[0]
+          await session.use(page.targetId)
+          return await session.Page.navigate({ url: "https://example.com" })
+        `);
+        expect(attachedCalls).toBe(2);
+        expect(pageCallsWithSession).toBe(2);
       }),
   );
 });

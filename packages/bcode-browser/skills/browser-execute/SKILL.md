@@ -106,7 +106,9 @@ const page = targets.find(t => t.type === "page" && !t.url.startsWith("chrome://
 await session.use(page.targetId)
 ```
 
-If a target-scoped command throws `CdpError` code `-32001` (`Session with given id not found`), the browser connection is still usable but the target session is stale. List targets again, `session.use(...)` the intended page, and retry the rejected command once. Repeated `session.connect()` calls do not replace a stale target session.
+If a target-scoped command throws `CdpError` code `-32001` (`Session with given id not found`), the browser connection is still usable but the target session is stale. List targets again, `session.use(...)` the intended page, and retry the rejected command once. Calling `session.connect()` without arguments is a no-op while connected; it does not replace a stale target session.
+
+Every explicit reconnect or browser switch retires the previous socket and clears its active target attachment. Re-list targets, call `session.use(...)`, and rediscover DOM nodes and Runtime objects before continuing.
 
 ## Driving a page
 Domain methods follow `session.<Domain>.<method>(params)` and return Promises. 
