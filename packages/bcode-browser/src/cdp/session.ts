@@ -89,6 +89,7 @@ export class Session implements Transport {
     }
     const envWsUrl = process.env.BU_CDP_WS ?? process.env.BU_CDP_URL;
     if (envWsUrl) {
+      if (this.isConnected()) return;
       await this.openWs(envWsUrl, timeoutMs);
       return;
     }
@@ -483,4 +484,3 @@ async function tryReadDevToolsActivePort(
     return undefined;
   }
 }
-
