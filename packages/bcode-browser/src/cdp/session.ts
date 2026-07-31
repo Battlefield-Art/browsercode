@@ -89,6 +89,7 @@ export class Session implements Transport {
     }
     const envWsUrl = process.env.BU_CDP_WS ?? process.env.BU_CDP_URL;
     if (envWsUrl) {
+      if (this.isConnected()) return;
       await this.openWs(envWsUrl, timeoutMs);
       return;
     }
@@ -122,6 +123,14 @@ export class Session implements Transport {
     if (this.invalidatedError) return Promise.reject(this.invalidatedError);
     return new Promise<void>((res, rej) => {
       const ws = new WebSocket(wsUrl);
+      const previousWs = this.ws;
+      this.ws = ws;
+      this.activeSessionId = undefined;
+      if (previousWs) {
+        for (const [, p] of this.pending) p.reject(new Error('CDP connection replaced'));
+        this.pending.clear();
+        try { previousWs.close(); } catch { /* ignore */ }
+      }
       let done = false;
       const finish = (err?: Error) => {
         if (done) return;
@@ -131,15 +140,28 @@ export class Session implements Transport {
         else res();
       };
       const timer = setTimeout(() => finish(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
-      ws.addEventListener('open', () => finish(this.invalidatedError));
+      ws.addEventListener('open', () => {
+        if (this.ws !== ws) {
+          finish(new Error('CDP connection superseded'));
+          return;
+        }
+        finish(this.invalidatedError);
+      });
       ws.addEventListener('error', (e) => finish(new Error(`WS error: ${(e as any)?.message ?? 'connect failed (likely 403, permission not granted, or port closed)'}`)));
-      ws.addEventListener('message', (e) => this.onMessage(String(e.data)));
+      ws.addEventListener('message', (e) => {
+        if (this.ws === ws) this.onMessage(String(e.data));
+      });
       ws.addEventListener('close', () => {
+        if (this.ws !== ws) {
+          finish(new Error('CDP connection superseded'));
+          return;
+        }
+        this.ws = undefined;
+        this.activeSessionId = undefined;
         for (const [, p] of this.pending) p.reject(this.invalidatedError ?? new Error('CDP socket closed'));
         this.pending.clear();
         finish(this.invalidatedError ?? new Error('WS closed before open (likely 403 or port closed)'));
       });
-      this.ws = ws;
     });
   }
 
@@ -483,4 +505,3 @@ async function tryReadDevToolsActivePort(
     return undefined;
   }
 }
-

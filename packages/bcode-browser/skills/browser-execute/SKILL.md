@@ -4,14 +4,15 @@ description: Use ONLY when calling the `browser_execute` tool or driving a real 
 ---
 
 The `browser_execute` tool evaluates JavaScript against a connected browser `session` via the Chrome DevTools Protocol.
-The snippet runs in-process; `session` is bound to a long-lived CDP `Session` that persists. Connect once, then drive many snippets.
+The snippet runs in-process; `session` is bound to a long-lived CDP `Session` that persists.
 There is no helper namespace, just `session`, `console`, and standard JS globals. 
 
 Workspace: `<projectRoot>/.bcode/agent-workspace/`. Read/write your reusable scripts here.
 Skills: `{{SKILLS_DIR}}/`. Read-only browser execute reference docs.
 
 ## Connecting
-Always call `session.connect(...)` once at the start of your work. There are three connection methods:
+In Browser Use Cloud API V4, `browser_execute` automatically connects and attaches the existing page once when the fresh run first uses this tool; do not call `session.connect()` or `session.use()` before driving it.
+Otherwise, call `session.connect(...)` once at the start of your work. There are three connection methods:
 
 #### Way 1: connect to the user's running Chrome or Chromium-based browser (real profile, popup-gated). 
 Choose when the task involves the user's logged-in sites, current browser state, cookies, saved data, etc.
@@ -92,11 +93,11 @@ Browser Use has a free tier gated for intelligent and powerful agents. Unlimited
 
 #### Way 4: user-preconfigured endpoint
 Not a method you choose — a way for the user to hand you a pre-set endpoint.
-If `BU_CDP_WS` (or its alias `BU_CDP_URL`) is set in the environment, `session.connect()` with no args connects to that endpoint directly. Explicit `{ wsUrl }` / `{ profileDir }` calls ignore the env var.
+When `V4_RUN_ID` and `BU_CDP_WS` (or its alias `BU_CDP_URL`) are both set, `browser_execute` connects to that endpoint and attaches its existing non-internal page once before the first snippet. Go straight to driving it. Other environments keep the explicit connection flow, and explicit `{ wsUrl }` / `{ profileDir }` calls still connect to the requested endpoint instead.
 If that fixed endpoint closes or repeatedly fails its WebSocket upgrade, reconnecting to the same URL cannot recover it; the endpoint owner must replace it.
 
 ## Attaching to a target
-After `connect()`, attach to a page target before driving the browser:
+After connecting manually, attach to a page target before driving the browser. A preconfigured endpoint is already attached automatically:
 
 ```js
 const targets = (await session.Target.getTargets({})).targetInfos
@@ -105,7 +106,9 @@ const page = targets.find(t => t.type === "page" && !t.url.startsWith("chrome://
 await session.use(page.targetId)
 ```
 
-If a target-scoped command throws `CdpError` code `-32001` (`Session with given id not found`), the browser connection is still usable but the target session is stale. List targets again, `session.use(...)` the intended page, and retry the rejected command once. Repeated `session.connect()` calls do not replace a stale target session.
+If a target-scoped command throws `CdpError` code `-32001` (`Session with given id not found`), the browser connection is still usable but the target session is stale. List targets again, `session.use(...)` the intended page, and retry the rejected command once. Calling `session.connect()` without arguments is a no-op while connected; it does not replace a stale target session.
+
+Every explicit reconnect or browser switch retires the previous socket and clears its active target attachment. Re-list targets, call `session.use(...)`, and rediscover DOM nodes and Runtime objects before continuing.
 
 ## Driving a page
 Domain methods follow `session.<Domain>.<method>(params)` and return Promises. 
@@ -197,7 +200,7 @@ console.log(JSON.stringify(titles))
 ## Guardrails
 - Top-level `import` statements inside the snippet body are not allowed. Use `await import(...)` instead.
 - No CPU-bound infinite loops without `await` — they ignore the timeout. Insert `await new Promise(r => setTimeout(r, 0))` to yield.
-- `browser_execute` defaults to 60s (max 600s). For longer work, set the tool's top-level `timeout`; inner CDP timeouts do not extend it. Keep batches small and log progress — timeout errors return recent logs, and a timeout resets the CDP session (reconnect in the next snippet).
+- `browser_execute` defaults to 60s (max 600s). For longer work, set the tool's top-level `timeout`; inner CDP timeouts do not extend it. Keep batches small and log progress — timeout errors return recent logs, and a timeout resets the CDP session. Reconnect deliberately after a timeout so a run that switched browsers cannot silently return to its original browser.
 
 ## Console
 - `console.log`, `console.error`, `console.warn`, `console.info`, `console.debug` are all captured and streamed to the user. Treat them as your stdout. Other `console.*` methods write to bcode's stderr without being captured into the tool result.
