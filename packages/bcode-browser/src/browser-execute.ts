@@ -56,7 +56,8 @@ const DEFAULT_TIMEOUT_MS = 60 * 1000
 const MAX_TIMEOUT_MS = 10 * 60 * 1000
 const MAX_TIMEOUT_OUTPUT_BYTES = 8 * 1024
 const TIMEOUT_OUTPUT_TRUNCATED = "[partial console output truncated; showing final bytes]\n"
-const cloudConnections = new WeakMap<ReturnType<typeof SessionStore.get>, Promise<void>>()
+const v4Connections = new Map<string, Promise<void>>()
+const v4Bootstrapped = new Set<string>()
 
 // Tail-cap the captured output for the timeout error: last 8 KiB, snapped
 // forward to a UTF-8 sequence start so multibyte characters survive the cut.
@@ -191,7 +192,7 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
       })
 
       yield* Effect.tryPromise({
-        try: () => ensureCloudConnected(session),
+        try: () => ensureCloudConnected(ctx.sessionID, session),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       })
 
@@ -283,27 +284,31 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
   return { parameters, execute, skillsDir }
 })
 
-async function ensureCloudConnected(session: ReturnType<typeof SessionStore.get>) {
-  if (!process.env.BU_CDP_WS && !process.env.BU_CDP_URL) return
-  if (session.isConnected() && session.getActiveSession()) return
+async function ensureCloudConnected(sessionID: string, session: ReturnType<typeof SessionStore.get>) {
+  if (!process.env.V4_RUN_ID || (!process.env.BU_CDP_WS && !process.env.BU_CDP_URL)) return
+  if (v4Bootstrapped.has(sessionID)) return
 
-  const existing = cloudConnections.get(session)
+  const existing = v4Connections.get(sessionID)
   if (existing) return existing
 
   const connecting = (async () => {
-    const connected = session.isConnected()
-    if (!connected) await session.connect()
-    if (connected && session.getActiveSession()) return
+    if (!session.isConnected()) await session.connect()
+    if (session.getActiveSession()) return
     const page = (await session.domains.Target.getTargets({})).targetInfos.find(
       (target) => target.type === "page" && !target.url.startsWith("chrome://"),
     )
     if (page) await session.use(page.targetId)
   })()
-  cloudConnections.set(session, connecting)
+  v4Connections.set(sessionID, connecting)
   try {
     await connecting
   } finally {
-    if (cloudConnections.get(session) === connecting) cloudConnections.delete(session)
+    // One automatic attempt per logical BrowserCode session. A later disconnect
+    // (including after timeout replacement) must be surfaced:
+    // BU_CDP_WS is the browser selected at run start, not necessarily a newer
+    // browser the agent explicitly switched to during this run.
+    v4Bootstrapped.add(sessionID)
+    if (v4Connections.get(sessionID) === connecting) v4Connections.delete(sessionID)
   }
 }
 

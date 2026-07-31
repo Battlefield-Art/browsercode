@@ -126,120 +126,188 @@ const withBrowserExecute = async (
   }
 };
 
-test("cloud endpoint auto-connects, attaches, and reuses one connection", async () => {
+test("V4 endpoint auto-connects, attaches, and reuses one connection", async () => {
   connections = 0;
   attachedCalls = 0;
   pageCallsWithSession = 0;
-  await withEnv({ BU_CDP_WS: wsUrl, BU_CDP_URL: undefined }, () =>
-    withBrowserExecute("reuse", async (impl, sessionID, workspaceDir) => {
-      const run = (code: string) =>
-        Effect.runPromise(
-          impl.execute(
-            { description: "List browser targets", code },
-            { sessionID, workspaceDir },
-          ),
-        );
+  await withEnv(
+    { V4_RUN_ID: "run-reuse", BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
+    () =>
+      withBrowserExecute("reuse", async (impl, sessionID, workspaceDir) => {
+        const run = (code: string) =>
+          Effect.runPromise(
+            impl.execute(
+              { description: "List browser targets", code },
+              { sessionID, workspaceDir },
+            ),
+          );
 
-      expect(
-        JSON.parse(
-          (
-            await run(
-              "return await session.Page.navigate({ url: 'https://sap.com' })",
-            )
-          ).result,
-        ),
-      ).toEqual({});
-      expect(
-        JSON.parse(
-          (
-            await run(
-              "await session.connect(); return (await session.Target.getTargets({})).targetInfos.length",
-            )
-          ).result,
-        ),
-      ).toBe(1);
-      expect(connections).toBe(1);
-      expect(attachedCalls).toBe(1);
-      expect(pageCallsWithSession).toBe(1);
-    }),
+        expect(
+          JSON.parse(
+            (
+              await run(
+                "return await session.Page.navigate({ url: 'https://sap.com' })",
+              )
+            ).result,
+          ),
+        ).toEqual({});
+        expect(
+          JSON.parse(
+            (
+              await run(
+                "await session.connect(); return (await session.Target.getTargets({})).targetInfos.length",
+              )
+            ).result,
+          ),
+        ).toBe(1);
+        expect(connections).toBe(1);
+        expect(attachedCalls).toBe(1);
+        expect(pageCallsWithSession).toBe(1);
+      }),
   );
 });
 
 test("parallel first calls share one connection attempt", async () => {
   connections = 0;
   attachedCalls = 0;
-  await withEnv({ BU_CDP_WS: wsUrl, BU_CDP_URL: undefined }, () =>
-    withBrowserExecute("race", async (impl, sessionID, workspaceDir) => {
-      const run = () =>
-        Effect.runPromise(
-          impl.execute(
-            {
-              description: "Read target count",
-              code: "return (await session.Target.getTargets({})).targetInfos.length",
-            },
-            { sessionID, workspaceDir },
-          ),
-        );
+  await withEnv(
+    { V4_RUN_ID: "run-race", BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
+    () =>
+      withBrowserExecute("race", async (impl, sessionID, workspaceDir) => {
+        const run = () =>
+          Effect.runPromise(
+            impl.execute(
+              {
+                description: "Read target count",
+                code: "return (await session.Target.getTargets({})).targetInfos.length",
+              },
+              { sessionID, workspaceDir },
+            ),
+          );
 
-      expect(
-        (await Promise.all([run(), run()])).map((result) =>
-          JSON.parse(result.result),
-        ),
-      ).toEqual([1, 1]);
-      expect(connections).toBe(1);
-      expect(attachedCalls).toBe(1);
-    }),
+        expect(
+          (await Promise.all([run(), run()])).map((result) =>
+            JSON.parse(result.result),
+          ),
+        ).toEqual([1, 1]);
+        expect(connections).toBe(1);
+        expect(attachedCalls).toBe(1);
+      }),
   );
 });
 
-test("a dropped provisioned socket reconnects and reattaches", async () => {
+test("a dropped socket is surfaced instead of reconnecting the run-start browser", async () => {
   connections = 0;
   attachedCalls = 0;
-  await withEnv({ BU_CDP_WS: wsUrl, BU_CDP_URL: undefined }, () =>
-    withBrowserExecute("dropped", async (impl, sessionID, workspaceDir) => {
-      const run = () =>
-        Effect.runPromise(
-          impl.execute(
-            {
-              description: "Navigate existing page",
-              code: "return await session.Page.navigate({ url: 'https://sap.com' })",
-            },
-            { sessionID, workspaceDir },
-          ),
+  await withEnv(
+    { V4_RUN_ID: "run-dropped", BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
+    () =>
+      withBrowserExecute("dropped", async (impl, sessionID, workspaceDir) => {
+        const run = () =>
+          Effect.runPromise(
+            impl.execute(
+              {
+                description: "Navigate existing page",
+                code: "return await session.Page.navigate({ url: 'https://sap.com' })",
+              },
+              { sessionID, workspaceDir },
+            ),
+          );
+
+        await run();
+        latestSocket?.close();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await expect(run()).rejects.toThrow(
+          "Not connected. Call session.connect(...) first.",
         );
 
-      await run();
-      latestSocket?.close();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      await run();
+        expect(connections).toBe(1);
+        expect(attachedCalls).toBe(1);
+      }),
+  );
+});
 
-      expect(connections).toBe(2);
-      expect(attachedCalls).toBe(2);
-    }),
+test("a timeout replacement does not auto-attach the run-start browser again", async () => {
+  connections = 0;
+  await withEnv(
+    { V4_RUN_ID: "run-timeout", BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
+    () =>
+      withBrowserExecute("timeout", async (impl, sessionID, workspaceDir) => {
+        await expect(
+          Effect.runPromise(
+            impl.execute(
+              {
+                description: "Time out after initial V4 bootstrap",
+                code: "await new Promise(resolve => setTimeout(resolve, 100))",
+                timeout: 10,
+              },
+              { sessionID, workspaceDir },
+            ),
+          ),
+        ).rejects.toThrow("browser_execute timed out");
+
+        await expect(
+          Effect.runPromise(
+            impl.execute(
+              {
+                description: "Do not silently return to the run-start browser",
+                code: "return await session.Page.navigate({ url: 'https://sap.com' })",
+              },
+              { sessionID, workspaceDir },
+            ),
+          ),
+        ).rejects.toThrow("Not connected. Call session.connect(...) first.");
+        expect(connections).toBe(1);
+      }),
   );
 });
 
 test("sessions without a provisioned endpoint still require connect", async () => {
-  await withEnv({ BU_CDP_WS: undefined, BU_CDP_URL: undefined }, () =>
-    withBrowserExecute("local", async (impl, sessionID, workspaceDir) => {
-      await expect(
-        Effect.runPromise(
-          impl.execute(
-            {
-              description: "Call CDP without connect",
-              code: "return await session.Target.getTargets({})",
-            },
-            { sessionID, workspaceDir },
+  await withEnv(
+    { V4_RUN_ID: undefined, BU_CDP_WS: undefined, BU_CDP_URL: undefined },
+    () =>
+      withBrowserExecute("local", async (impl, sessionID, workspaceDir) => {
+        await expect(
+          Effect.runPromise(
+            impl.execute(
+              {
+                description: "Call CDP without connect",
+                code: "return await session.Target.getTargets({})",
+              },
+              { sessionID, workspaceDir },
+            ),
           ),
-        ),
-      ).rejects.toThrow("Not connected. Call session.connect(...) first.");
-    }),
+        ).rejects.toThrow("Not connected. Call session.connect(...) first.");
+      }),
   );
 });
 
-test("failed auto-connect reports the connection error before running the snippet", async () => {
+test("eval endpoints remain explicit without V4_RUN_ID", async () => {
+  connections = 0;
+  await withEnv(
+    { V4_RUN_ID: undefined, BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
+    () =>
+      withBrowserExecute("eval", async (impl, sessionID, workspaceDir) => {
+        await expect(
+          Effect.runPromise(
+            impl.execute(
+              {
+                description: "Call CDP without explicit eval connect",
+                code: "return await session.Target.getTargets({})",
+              },
+              { sessionID, workspaceDir },
+            ),
+          ),
+        ).rejects.toThrow("Not connected. Call session.connect(...) first.");
+        expect(connections).toBe(0);
+      }),
+  );
+});
+
+test("a failed V4 bootstrap does not block an explicit replacement browser", async () => {
   await withEnv(
     {
+      V4_RUN_ID: "run-replacement",
       BU_CDP_WS: `ws://127.0.0.1:${failingServer.port}/`,
       BU_CDP_URL: undefined,
     },
@@ -260,6 +328,22 @@ test("failed auto-connect reports the connection error before running the snippe
           "browser_execute snippet threw",
         );
         await expect(failure).rejects.not.toThrow("snippet should not run");
+
+        const recovered = await Effect.runPromise(
+          impl.execute(
+            {
+              description: "Connect a replacement browser",
+              code: `
+                await session.connect({ wsUrl: ${JSON.stringify(wsUrl)} })
+                const page = (await session.Target.getTargets({})).targetInfos[0]
+                await session.use(page.targetId)
+                return await session.Page.navigate({ url: "https://sap.com" })
+              `,
+            },
+            { sessionID, workspaceDir },
+          ),
+        );
+        expect(JSON.parse(recovered.result)).toEqual({});
       }),
   );
 });
