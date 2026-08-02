@@ -202,7 +202,7 @@ console.log(JSON.stringify(titles))
 ## Guardrails
 - Top-level `import` statements inside the snippet body are not allowed. Use `await import(...)` instead.
 - No CPU-bound infinite loops without `await` — they ignore the timeout. Insert `await new Promise(r => setTimeout(r, 0))` to yield.
-- `browser_execute` defaults to 60s (max 600s); inner CDP timeouts do not extend it. Prefer the default and small batches: a longer timeout also delays your next chance to inspect or recover, so split multi-page loops into separate calls. After a timeout, the same CDP session and active target are preserved, but an already-sent command may still be running in Chrome. Try one small state check; if that target is unresponsive, attach a fresh page target instead of retrying longer, and reconnect only if the socket actually closed.
+- `browser_execute` defaults to 60s (max 600s); inner CDP timeouts do not extend it. Keep calls small and do not increase the timeout after a page command stalls. A timeout preserves the connection and target, and the last command may still run: probe with browser-level `Target.getTargets`; if that works but page commands hang, attach a fresh page target. Reconnect only if the socket closed.
 
 ## Console
 - `console.log`, `console.error`, `console.warn`, `console.info`, `console.debug` are all captured and streamed to the user. Treat them as your stdout. Other `console.*` methods write to bcode's stderr without being captured into the tool result.
