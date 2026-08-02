@@ -34,6 +34,18 @@ const server = Bun.serve({
         typeof request.method !== "string"
       )
         return;
+      if (
+        request.method === "Page.navigate" &&
+        "params" in request &&
+        request.params &&
+        typeof request.params === "object" &&
+        "url" in request.params &&
+        request.params.url === "https://stuck.example"
+      ) {
+        pageCallsWithSession++;
+        setTimeout(() => ws.send(JSON.stringify({ id: request.id, result: {} })), 40);
+        return;
+      }
       const result = (() => {
         if (request.method === "Target.getTargets")
           return {
@@ -290,11 +302,8 @@ test("a timeout preserves the same browser and target", async () => {
               {
                 description: "Time out after initial V4 bootstrap",
                 code: `
-                  const navigate = session.Page.navigate
-                  setTimeout(async () => {
-                    try { await navigate({ url: "https://too-late.example" }) } catch {}
-                  }, 30)
-                  await new Promise(resolve => setTimeout(resolve, 100))
+                  await session.Page.navigate({ url: "https://stuck.example" })
+                  try { await session.Page.navigate({ url: "https://too-late.example" }) } catch {}
                 `,
                 timeout: 10,
               },
@@ -316,7 +325,7 @@ test("a timeout preserves the same browser and target", async () => {
         await new Promise((resolve) => setTimeout(resolve, 40));
         expect(connections).toBe(1);
         expect(attachedCalls).toBe(1);
-        expect(pageCallsWithSession).toBe(1);
+        expect(pageCallsWithSession).toBe(2);
       }),
   );
 });
