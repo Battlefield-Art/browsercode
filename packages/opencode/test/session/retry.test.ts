@@ -4,7 +4,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Effect, Exit, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -113,6 +113,28 @@ describe("session.retry.delay", () => {
         attempt: 2,
         message: "boom",
       })
+    }),
+  )
+
+  it.instance("policy caps output-length errors at three retries", () =>
+    Effect.gen(function* () {
+      const error = new SessionV1.OutputLengthError({}).toObject()
+      const attempts: number[] = []
+      const step = yield* Schedule.toStep(
+        SessionRetry.policy({
+          provider: "test",
+          parse: () => error,
+          set: (info) => Effect.sync(() => attempts.push(info.attempt)),
+        }),
+      )
+
+      yield* step(0, error)
+      yield* step(0, error)
+      yield* step(0, error)
+      const fourth = yield* step(0, error).pipe(Effect.exit)
+
+      expect(attempts).toStrictEqual([1, 2, 3])
+      expect(Exit.isFailure(fourth)).toBe(true)
     }),
   )
 })

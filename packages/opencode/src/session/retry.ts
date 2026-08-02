@@ -37,6 +37,7 @@ export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+export const OUTPUT_LENGTH_MAX_RETRIES = 3
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
@@ -189,11 +190,15 @@ export function policy(opts: {
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
+  let outputLengthRetries = 0
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
+      if (SessionV1.OutputLengthError.isInstance(error) && ++outputLengthRetries > OUTPUT_LENGTH_MAX_RETRIES) {
+        return Cause.done(meta.attempt)
+      }
       return Effect.gen(function* () {
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis
