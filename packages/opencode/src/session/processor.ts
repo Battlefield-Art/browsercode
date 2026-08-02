@@ -734,6 +734,8 @@ const layer = Layer.effect(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
+                // Only replace attempts that will be retried. Cloud intentionally
+                // returns the terminal partial next to the truncation error.
                 onRetry: (error) =>
                   SessionV1.OutputLengthError.isInstance(error) ? resetOutputLimit() : Effect.void,
                 set: (info) => {

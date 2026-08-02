@@ -23,6 +23,7 @@ export type RetryReason = "free_tier_limit" | "account_rate_limit" | (string & {
 
 export type Retryable = {
   message: string
+  maxAttempts?: number
   action?: {
     reason: RetryReason
     provider: string
@@ -37,7 +38,6 @@ export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
-export const OUTPUT_LENGTH_MAX_RETRIES = 2
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
@@ -77,7 +77,9 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
 }
 
 export function retryable(error: Err, provider: string) {
-  if (SessionV1.OutputLengthError.isInstance(error)) return { message: "Model hit its output limit" }
+  if (SessionV1.OutputLengthError.isInstance(error)) {
+    return { message: "Model hit its output limit", maxAttempts: 3 }
+  }
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
@@ -191,15 +193,12 @@ export function policy(opts: {
   onRetry?: (error: Err) => Effect.Effect<void>
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
-  let outputLengthRetries = 0
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
-      if (SessionV1.OutputLengthError.isInstance(error) && ++outputLengthRetries > OUTPUT_LENGTH_MAX_RETRIES) {
-        return Cause.done(meta.attempt)
-      }
+      if (retry.maxAttempts !== undefined && meta.attempt >= retry.maxAttempts) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
         if (opts.onRetry) yield* opts.onRetry(error)
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)

@@ -116,7 +116,7 @@ describe("session.retry.delay", () => {
     }),
   )
 
-  it.effect("policy caps output-length errors at two retries", () =>
+  it.effect("policy caps output-length errors at three total calls", () =>
     Effect.gen(function* () {
       const error = new SessionV1.OutputLengthError({}).toObject()
       const attempts: number[] = []

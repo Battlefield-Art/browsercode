@@ -249,6 +249,10 @@ const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, 
 const itFragmentFailure = testEffect(fragmentFailureEnv)
 
 const outputRetryInputs: LLM.StreamInput[] = []
+const outputRetryUsage = {
+  truncated: { input: 3, output: 5 },
+  complete: { input: 7, output: 11 },
+} as const
 const outputRetryLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
@@ -263,7 +267,10 @@ const outputRetryLLM = Layer.succeed(
         LLMEvent.stepFinish({
           index: 0,
           reason: first ? "length" : "stop",
-          usage: first ? { inputTokens: 3, outputTokens: 5 } : { inputTokens: 7, outputTokens: 11 },
+          usage: {
+            inputTokens: first ? outputRetryUsage.truncated.input : outputRetryUsage.complete.input,
+            outputTokens: first ? outputRetryUsage.truncated.output : outputRetryUsage.complete.output,
+          },
         }),
         LLMEvent.finish({ reason: first ? "length" : "stop" }),
       )
@@ -600,12 +607,14 @@ itOutputRetry.live("session.processor effect tests resample the exact request af
       expect(outputRetryInputs[1]).toBe(outputRetryInputs[0])
       expect(parts.filter((part) => part.type === "text").map((part) => part.text)).toStrictEqual(["complete"])
       const finishes = parts.filter((part) => part.type === "step-finish")
+      const input = outputRetryUsage.truncated.input + outputRetryUsage.complete.input
+      const output = outputRetryUsage.truncated.output + outputRetryUsage.complete.output
       expect(finishes).toHaveLength(1)
       expect(finishes[0]).toMatchObject({
         reason: "stop",
-        tokens: { input: 10, output: 16 },
+        tokens: { input, output },
       })
-      expect(finishes[0]?.cost).toBeCloseTo(0.000026)
+      expect(finishes[0]?.cost).toBeCloseTo((input + output) / 1_000_000)
       expect(handle.message.finish).toBe("stop")
     }),
   ),
