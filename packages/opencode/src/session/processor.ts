@@ -96,6 +96,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  outputLimitUsage: Pick<SessionV1.StepFinishPart, "cost" | "tokens"> | undefined
 }
 
 type StreamEvent = LLMEvent
@@ -135,6 +136,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        outputLimitUsage: undefined,
       }
       let aborted = false
 
@@ -163,6 +165,26 @@ const layer = Layer.effect(
           return undefined
         }
         return { call, part }
+      })
+
+      const resetOutputLimit = Effect.fn("SessionProcessor.resetOutputLimit")(function* () {
+        const parts = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        // Replace the streamed attempt before resampling the unchanged request.
+        // Its usage is carried into the next step-finish part.
+        yield* Effect.forEach(
+          parts,
+          (part) =>
+            session.removePart({
+              sessionID: part.sessionID,
+              messageID: part.messageID,
+              partID: part.id,
+            }),
+          { concurrency: "unbounded" },
+        )
+        ctx.assistantMessage.finish = undefined
+        yield* session.updateMessage(ctx.assistantMessage)
       })
 
       const updateToolCall = Effect.fn("SessionProcessor.updateToolCall")(function* (
@@ -466,9 +488,28 @@ const layer = Layer.effect(
               usage: value.usage ?? new Usage({}),
               metadata: value.providerMetadata,
             })
+            const previous = ctx.outputLimitUsage
+            const total =
+              previous?.tokens.total === undefined && usage.tokens.total === undefined
+                ? undefined
+                : (previous?.tokens.total ?? 0) + (usage.tokens.total ?? 0)
+            const accounted = {
+              cost: (previous?.cost ?? 0) + usage.cost,
+              tokens: {
+                ...(total === undefined ? {} : { total }),
+                input: (previous?.tokens.input ?? 0) + usage.tokens.input,
+                output: (previous?.tokens.output ?? 0) + usage.tokens.output,
+                reasoning: (previous?.tokens.reasoning ?? 0) + usage.tokens.reasoning,
+                cache: {
+                  read: (previous?.tokens.cache.read ?? 0) + usage.tokens.cache.read,
+                  write: (previous?.tokens.cache.write ?? 0) + usage.tokens.cache.write,
+                },
+              },
+            }
+            ctx.outputLimitUsage = value.reason === "length" ? accounted : undefined
             ctx.assistantMessage.finish = value.reason
             ctx.assistantMessage.cost += usage.cost
-            ctx.assistantMessage.tokens = usage.tokens
+            ctx.assistantMessage.tokens = accounted.tokens
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
@@ -476,10 +517,11 @@ const layer = Layer.effect(
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
               type: "step-finish",
-              tokens: usage.tokens,
-              cost: usage.cost,
+              tokens: accounted.tokens,
+              cost: accounted.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
+            if (value.reason === "length") throw new SessionV1.OutputLengthError({})
             if (ctx.snapshot) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {
@@ -692,6 +734,10 @@ const layer = Layer.effect(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
+                // Only replace attempts that will be retried. Cloud intentionally
+                // returns the terminal partial next to the truncation error.
+                onRetry: (error) =>
+                  SessionV1.OutputLengthError.isInstance(error) ? resetOutputLimit() : Effect.void,
                 set: (info) => {
                   return status.set(ctx.sessionID, {
                     type: "retry",

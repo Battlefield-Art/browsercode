@@ -41,6 +41,28 @@ const ref = {
   modelID: ModelV2.ID.make("test-model"),
 }
 
+const outputRetryModel: Provider.Model = {
+  id: ref.modelID,
+  providerID: ref.providerID,
+  api: { id: "test-model", url: "https://example.com", npm: "@ai-sdk/openai" },
+  name: "Test Model",
+  capabilities: {
+    temperature: true,
+    reasoning: false,
+    attachment: false,
+    toolcall: true,
+    input: { text: true, audio: false, image: false, video: false, pdf: false },
+    output: { text: true, audio: false, image: false, video: false, pdf: false },
+    interleaved: false,
+  },
+  cost: { input: 1, output: 1, cache: { read: 0, write: 0 } },
+  limit: { context: 100_000, input: 100_000, output: 10_000 },
+  status: "active",
+  options: {},
+  headers: {},
+  release_date: "2026-01-01",
+}
+
 const cfg = {
   provider: {
     test: {
@@ -225,6 +247,38 @@ const fragmentFailureLLM = Layer.succeed(
 )
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
+
+const outputRetryInputs: LLM.StreamInput[] = []
+const outputRetryUsage = {
+  truncated: { input: 3, output: 5 },
+  complete: { input: 7, output: 11 },
+} as const
+const outputRetryLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: (input) => {
+      outputRetryInputs.push(input)
+      const first = outputRetryInputs.length === 1
+      return Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        LLMEvent.textDelta({ id: "text-1", text: first ? "truncated" : "complete" }),
+        LLMEvent.textEnd({ id: "text-1" }),
+        LLMEvent.stepFinish({
+          index: 0,
+          reason: first ? "length" : "stop",
+          usage: {
+            inputTokens: first ? outputRetryUsage.truncated.input : outputRetryUsage.complete.input,
+            outputTokens: first ? outputRetryUsage.truncated.output : outputRetryUsage.complete.output,
+          },
+        }),
+        LLMEvent.finish({ reason: first ? "length" : "stop" }),
+      )
+    },
+  }),
+)
+const outputRetryEnv = LayerNode.compile(root, [...replacements, [LLM.node, outputRetryLLM]])
+const itOutputRetry = testEffect(outputRetryEnv)
 
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
@@ -511,6 +565,58 @@ it.live("session.processor effect tests reset reasoning state across retries", (
         expect(reasoning.some((part) => part.text === "onetwo")).toBe(false)
       }),
     { config: (url) => providerCfg(url) },
+  ),
+)
+
+itOutputRetry.live("session.processor effect tests resample the exact request after an output limit", () =>
+  provideTmpdirInstance((dir) =>
+    Effect.gen(function* () {
+      const { processors, session } = yield* boot()
+      outputRetryInputs.length = 0
+
+      const chat = yield* session.create({})
+      const parent = yield* user(chat.id, "resample")
+      const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+      const handle = yield* processors.create({
+        assistantMessage: msg,
+        sessionID: chat.id,
+        model: outputRetryModel,
+      })
+
+      const value = yield* handle.process({
+        user: {
+          id: parent.id,
+          sessionID: chat.id,
+          role: "user",
+          time: parent.time,
+          agent: parent.agent,
+          model: { providerID: ref.providerID, modelID: ref.modelID },
+        } satisfies SessionV1.User,
+        sessionID: chat.id,
+        model: outputRetryModel,
+        agent: agent(),
+        system: [],
+        messages: [{ role: "user", content: "resample" }],
+        tools: {},
+      })
+
+      const parts = yield* MessageV2.parts(msg.id)
+
+      expect(value).toBe("continue")
+      expect(outputRetryInputs).toHaveLength(2)
+      expect(outputRetryInputs[1]).toBe(outputRetryInputs[0])
+      expect(parts.filter((part) => part.type === "text").map((part) => part.text)).toStrictEqual(["complete"])
+      const finishes = parts.filter((part) => part.type === "step-finish")
+      const input = outputRetryUsage.truncated.input + outputRetryUsage.complete.input
+      const output = outputRetryUsage.truncated.output + outputRetryUsage.complete.output
+      expect(finishes).toHaveLength(1)
+      expect(finishes[0]).toMatchObject({
+        reason: "stop",
+        tokens: { input, output },
+      })
+      expect(finishes[0]?.cost).toBeCloseTo((input + output) / 1_000_000)
+      expect(handle.message.finish).toBe("stop")
+    }),
   ),
 )
 
