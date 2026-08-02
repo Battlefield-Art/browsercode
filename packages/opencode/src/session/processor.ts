@@ -96,6 +96,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  outputLimitUsage: Pick<SessionV1.StepFinishPart, "cost" | "tokens"> | undefined
 }
 
 type StreamEvent = LLMEvent
@@ -135,6 +136,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        outputLimitUsage: undefined,
       }
       let aborted = false
 
@@ -169,10 +171,10 @@ const layer = Layer.effect(
         const parts = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
           Effect.provideService(Database.Service, database),
         )
-        // Replace the streamed partial before resampling the unchanged request.
-        // Keep step-finish so usage from the billed attempt remains accounted for.
+        // Replace the streamed attempt before resampling the unchanged request.
+        // Its usage is carried into the next step-finish part.
         yield* Effect.forEach(
-          parts.filter((part) => part.type !== "step-finish"),
+          parts,
           (part) =>
             session.removePart({
               sessionID: part.sessionID,
@@ -486,9 +488,28 @@ const layer = Layer.effect(
               usage: value.usage ?? new Usage({}),
               metadata: value.providerMetadata,
             })
+            const previous = ctx.outputLimitUsage
+            const total =
+              previous?.tokens.total === undefined && usage.tokens.total === undefined
+                ? undefined
+                : (previous?.tokens.total ?? 0) + (usage.tokens.total ?? 0)
+            const accounted = {
+              cost: (previous?.cost ?? 0) + usage.cost,
+              tokens: {
+                ...(total === undefined ? {} : { total }),
+                input: (previous?.tokens.input ?? 0) + usage.tokens.input,
+                output: (previous?.tokens.output ?? 0) + usage.tokens.output,
+                reasoning: (previous?.tokens.reasoning ?? 0) + usage.tokens.reasoning,
+                cache: {
+                  read: (previous?.tokens.cache.read ?? 0) + usage.tokens.cache.read,
+                  write: (previous?.tokens.cache.write ?? 0) + usage.tokens.cache.write,
+                },
+              },
+            }
+            ctx.outputLimitUsage = value.reason === "length" ? accounted : undefined
             ctx.assistantMessage.finish = value.reason
             ctx.assistantMessage.cost += usage.cost
-            ctx.assistantMessage.tokens = usage.tokens
+            ctx.assistantMessage.tokens = accounted.tokens
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
@@ -496,8 +517,8 @@ const layer = Layer.effect(
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
               type: "step-finish",
-              tokens: usage.tokens,
-              cost: usage.cost,
+              tokens: accounted.tokens,
+              cost: accounted.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
             if (value.reason === "length") throw new SessionV1.OutputLengthError({})
@@ -709,13 +730,12 @@ const layer = Layer.effect(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
             ),
-            Effect.tapError((error) =>
-              SessionV1.OutputLengthError.isInstance(error) ? resetOutputLimit() : Effect.void,
-            ),
             Effect.retry(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
+                onRetry: (error) =>
+                  SessionV1.OutputLengthError.isInstance(error) ? resetOutputLimit() : Effect.void,
                 set: (info) => {
                   return status.set(ctx.sessionID, {
                     type: "retry",

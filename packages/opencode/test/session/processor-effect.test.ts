@@ -55,7 +55,7 @@ const outputRetryModel: Provider.Model = {
     output: { text: true, audio: false, image: false, video: false, pdf: false },
     interleaved: false,
   },
-  cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+  cost: { input: 1, output: 1, cache: { read: 0, write: 0 } },
   limit: { context: 100_000, input: 100_000, output: 10_000 },
   status: "active",
   options: {},
@@ -260,7 +260,11 @@ const outputRetryLLM = Layer.succeed(
         LLMEvent.textStart({ id: "text-1" }),
         LLMEvent.textDelta({ id: "text-1", text: first ? "truncated" : "complete" }),
         LLMEvent.textEnd({ id: "text-1" }),
-        LLMEvent.stepFinish({ index: 0, reason: first ? "length" : "stop" }),
+        LLMEvent.stepFinish({
+          index: 0,
+          reason: first ? "length" : "stop",
+          usage: first ? { inputTokens: 3, outputTokens: 5 } : { inputTokens: 7, outputTokens: 11 },
+        }),
         LLMEvent.finish({ reason: first ? "length" : "stop" }),
       )
     },
@@ -595,6 +599,13 @@ itOutputRetry.live("session.processor effect tests resample the exact request af
       expect(outputRetryInputs).toHaveLength(2)
       expect(outputRetryInputs[1]).toBe(outputRetryInputs[0])
       expect(parts.filter((part) => part.type === "text").map((part) => part.text)).toStrictEqual(["complete"])
+      const finishes = parts.filter((part) => part.type === "step-finish")
+      expect(finishes).toHaveLength(1)
+      expect(finishes[0]).toMatchObject({
+        reason: "stop",
+        tokens: { input: 10, output: 16 },
+      })
+      expect(finishes[0]?.cost).toBeCloseTo(0.000026)
       expect(handle.message.finish).toBe("stop")
     }),
   ),

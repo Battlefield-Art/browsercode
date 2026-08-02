@@ -116,14 +116,16 @@ describe("session.retry.delay", () => {
     }),
   )
 
-  it.instance("policy caps output-length errors at two retries", () =>
+  it.effect("policy caps output-length errors at two retries", () =>
     Effect.gen(function* () {
       const error = new SessionV1.OutputLengthError({}).toObject()
       const attempts: number[] = []
+      let retries = 0
       const step = yield* Schedule.toStep(
         SessionRetry.policy({
           provider: "test",
           parse: () => error,
+          onRetry: () => Effect.sync(() => retries++),
           set: (info) => Effect.sync(() => attempts.push(info.attempt)),
         }),
       )
@@ -133,6 +135,7 @@ describe("session.retry.delay", () => {
       const third = yield* step(0, error).pipe(Effect.exit)
 
       expect(attempts).toStrictEqual([1, 2])
+      expect(retries).toBe(2)
       expect(Exit.isFailure(third)).toBe(true)
     }),
   )

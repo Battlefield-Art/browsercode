@@ -188,6 +188,7 @@ function parseJSON(value: unknown) {
 export function policy(opts: {
   provider: string
   parse: (error: unknown) => Err
+  onRetry?: (error: Err) => Effect.Effect<void>
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
   let outputLengthRetries = 0
@@ -200,6 +201,7 @@ export function policy(opts: {
         return Cause.done(meta.attempt)
       }
       return Effect.gen(function* () {
+        if (opts.onRetry) yield* opts.onRetry(error)
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
