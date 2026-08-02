@@ -25,6 +25,38 @@ const configuredLayer = (cfg: ConfigV1.Info) =>
 const configuredIt = (cfg: ConfigV1.Info) => testEffect(configuredLayer(cfg))
 
 describe("Truncate", () => {
+  describe("error", () => {
+    test("uses a 10,000 character model-facing limit", () => {
+      expect(Truncate.MAX_ERROR_CHARS).toBe(10_000)
+    })
+
+    it.live("keeps short errors unchanged", () =>
+      Effect.gen(function* () {
+        const content = "short tool error with exact whitespace\n"
+        const result = yield* (yield* Truncate.Service).error(content)
+
+        expect(result).toEqual({ content, truncated: false })
+      }),
+    )
+
+    it.live("saves the full error and returns a bounded head and tail", () =>
+      Effect.gen(function* () {
+        const content = `ERROR_HEAD:${"h".repeat(15_000)}GIANT_MIDDLE${"t".repeat(15_000)}:ERROR_TAIL`
+        const result = yield* (yield* Truncate.Service).error(content)
+
+        expect(result.truncated).toBe(true)
+        expect(result.content.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
+        expect(result.content).toContain("ERROR_HEAD")
+        expect(result.content).toContain("ERROR_TAIL")
+        expect(result.content).not.toContain("GIANT_MIDDLE")
+        expect(result.content).toContain("the full error was saved to")
+        if (!result.truncated) throw new Error("expected truncated")
+        expect(result.content).toContain(result.outputPath)
+        expect(yield* (yield* FSUtil.Service).readFileString(result.outputPath)).toBe(content)
+      }),
+    )
+  })
+
   describe("output", () => {
     it.live("truncates large json file by bytes", () =>
       Effect.gen(function* () {

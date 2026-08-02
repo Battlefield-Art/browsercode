@@ -3,7 +3,8 @@ import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import path from "path"
-import { tool, type ModelMessage } from "ai"
+import { InvalidToolInputError, tool, type ModelMessage } from "ai"
+import { JSONParseError } from "@ai-sdk/provider"
 import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
@@ -27,6 +28,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+import { Truncate } from "@/tool/truncate"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
 
@@ -169,6 +171,67 @@ describe("session.llm.hasToolCalls", () => {
       },
     ] as ModelMessage[]
     expect(LLM.hasToolCalls(messages)).toBe(true)
+  })
+})
+
+describe("session.llm.invalidToolCallInput", () => {
+  test("bounds JSON parsing errors stored in repaired tool calls", () => {
+    const dropped = "GIANT_MIDDLE_SHOULD_NOT_BE_STORED"
+    const malformed = `{"query":"USEFUL_PREFIX:${"x".repeat(100_000)}${dropped}${"y".repeat(100_000)}:USEFUL_INPUT_TAIL`
+    expect(malformed.length).toBeGreaterThan(200_000)
+
+    let cause: unknown
+    try {
+      JSON.parse(malformed)
+    } catch (error) {
+      cause = error
+    }
+    if (!cause) throw new Error("expected malformed input to fail JSON parsing")
+
+    const failed = new InvalidToolInputError({
+      toolName: "lookup",
+      toolInput: malformed,
+      cause: new JSONParseError({ text: malformed, cause }),
+    })
+    expect(failed.message.length).toBeGreaterThan(200_000)
+
+    const storedSchema = z.object({ tool: z.string(), error: z.string() })
+    const stored = LLM.invalidToolCallInput("lookup", failed.message)
+    const repaired = storedSchema.parse(JSON.parse(stored))
+    const omission = repaired.error.match(/\n\.\.\. (\d+) characters omitted \.\.\.\n/)
+
+    expect(stored.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
+    expect(repaired.error.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
+    expect(repaired.tool).toBe("lookup")
+    expect(repaired.error).toContain("USEFUL_PREFIX")
+    expect(repaired.error).toContain("USEFUL_INPUT_TAIL")
+    expect(repaired.error).toContain("JSON Parse error: Unterminated string")
+    expect(omission).not.toBeNull()
+    if (!omission) throw new Error("expected repaired error to report omitted characters")
+    expect(Number(omission[1])).toBe(failed.message.length - (repaired.error.length - omission[0].length))
+    expect(repaired.error).not.toContain(dropped)
+
+    const short = "short tool error with exact whitespace\n"
+    const unchanged = storedSchema.parse(JSON.parse(LLM.invalidToolCallInput("lookup", short)))
+    expect(unchanged.error).toBe(short)
+
+    const whitespaceMalformed =
+      '{"description":"Test resumed player extraction","code":"const x=1;' + "\n\t".repeat(118_000) + '"}'
+    let whitespaceCause: unknown
+    try {
+      JSON.parse(whitespaceMalformed)
+    } catch (error) {
+      whitespaceCause = error
+    }
+    if (!whitespaceCause) throw new Error("expected whitespace-heavy input to fail JSON parsing")
+    const whitespaceError = new InvalidToolInputError({
+      toolName: "browser_execute",
+      toolInput: whitespaceMalformed,
+      cause: new JSONParseError({ text: whitespaceMalformed, cause: whitespaceCause }),
+    })
+    const boundedWhitespace = LLM.invalidToolCallInput("browser_execute", whitespaceError.message)
+    expect(boundedWhitespace.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
+    expect(JSON.parse(boundedWhitespace).error).toContain("characters omitted")
   })
 })
 

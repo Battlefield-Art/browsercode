@@ -29,8 +29,36 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { Truncate } from "@/tool/truncate"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
+
+const TOOL_CALL_ERROR_MAX_CHARS = Truncate.MAX_ERROR_CHARS
+const TOOL_CALL_ERROR_CONTEXT_CHARS = Math.floor(TOOL_CALL_ERROR_MAX_CHARS / 2)
+const TOOL_CALL_NAME_MAX_CHARS = 256
+
+export function invalidToolCallInput(tool: string, message: string) {
+  const exact = JSON.stringify({ tool, error: message })
+  if (exact.length <= TOOL_CALL_ERROR_MAX_CHARS) return exact
+
+  const name = tool.length <= TOOL_CALL_NAME_MAX_CHARS ? tool : `${tool.slice(0, TOOL_CALL_NAME_MAX_CHARS - 3)}...`
+  const maximum = Math.min(TOOL_CALL_ERROR_CONTEXT_CHARS, Math.floor(message.length / 2))
+  let lower = 0
+  let upper = maximum
+  let result = JSON.stringify({ tool: name, error: `... ${message.length} characters omitted ...` })
+  while (lower <= upper) {
+    const context = Math.floor((lower + upper) / 2)
+    const error = `${message.slice(0, context)}\n... ${message.length - context * 2} characters omitted ...\n${context === 0 ? "" : message.slice(-context)}`
+    const candidate = JSON.stringify({ tool: name, error })
+    if (candidate.length > TOOL_CALL_ERROR_MAX_CHARS) {
+      upper = context - 1
+      continue
+    }
+    result = candidate
+    lower = context + 1
+  }
+  return result
+}
 
 export type StreamInput = {
   user: SessionV1.User
@@ -70,6 +98,7 @@ const live: Layer.Layer<
   | EventV2Bridge.Service
   | LLMClientService
   | RuntimeFlags.Service
+  | Truncate.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -81,6 +110,7 @@ const live: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const truncate = yield* Truncate.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
@@ -142,7 +172,8 @@ const live: Layer.Layer<
               title: typeof result === "object" ? result?.title : undefined,
             }
           } catch (e: any) {
-            return { result: "", error: e.message ?? String(e) }
+            const error = await bridge.promise(truncate.error(e.message ?? String(e)))
+            return { result: "", error: error.content }
           }
         }
 
@@ -301,12 +332,10 @@ const live: Layer.Layer<
                 toolName: lower,
               }
             }
+            const error = await bridge.promise(truncate.error(failed.error.message))
             return {
               ...failed.toolCall,
-              input: JSON.stringify({
-                tool: failed.toolCall.toolName,
-                error: failed.error.message,
-              }),
+              input: invalidToolCallInput(failed.toolCall.toolName, error.content),
               toolName: "invalid",
             }
           },
@@ -398,6 +427,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     llmClient,
     RuntimeFlags.node,
+    Truncate.node,
   ],
 })
 

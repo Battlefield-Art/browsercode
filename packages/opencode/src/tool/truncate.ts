@@ -14,6 +14,7 @@ const RETENTION = Duration.days(7)
 
 export const MAX_LINES = 2000
 export const MAX_BYTES = 50 * 1024
+export const MAX_ERROR_CHARS = 10_000
 export const DIR = TRUNCATION_DIR
 export const GLOB = path.join(TRUNCATION_DIR, "*")
 
@@ -33,6 +34,11 @@ function hasTaskTool(agent?: Agent.Info) {
 export interface Interface {
   readonly cleanup: () => Effect.Effect<void>
   readonly write: (text: string) => Effect.Effect<string>
+  /**
+   * Keeps short tool errors unchanged. Larger errors are written to the same
+   * retained output store and replaced with a bounded head/tail preview.
+   */
+  readonly error: (text: string) => Effect.Effect<Result>
   /**
    * Returns output unchanged when it fits within the limits, otherwise writes the full text
    * to the truncation directory and returns a preview plus a hint to inspect the saved file.
@@ -70,6 +76,21 @@ const layer = Layer.effect(
       yield* fs.ensureDir(TRUNCATION_DIR).pipe(Effect.orDie)
       yield* fs.writeFileString(file, text).pipe(Effect.orDie)
       return file
+    })
+
+    const error = Effect.fn("Truncate.error")(function* (text: string) {
+      if (text.length <= MAX_ERROR_CHARS) return { content: text, truncated: false } as const
+
+      const file = yield* write(text)
+      const notice = (omitted: number) =>
+        `\n\n...${omitted} characters truncated...\n\nThe tool call failed and the full error was saved to: ${file}\nUse Grep to search the full error or Read with offset/limit to inspect specific sections.\n\n`
+      const context = Math.max(0, Math.floor((MAX_ERROR_CHARS - notice(text.length).length) / 2))
+      const omitted = text.length - context * 2
+      return {
+        content: `${text.slice(0, context)}${notice(omitted)}${context === 0 ? "" : text.slice(-context)}`,
+        truncated: true,
+        outputPath: file,
+      } as const
     })
 
     const limits = Effect.fn("Truncate.limits")(function* () {
@@ -147,7 +168,7 @@ const layer = Layer.effect(
       Effect.forkScoped,
     )
 
-    return Service.of({ cleanup, write, output, limits })
+    return Service.of({ cleanup, write, error, output, limits })
   }),
 )
 

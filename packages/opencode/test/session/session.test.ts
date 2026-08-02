@@ -16,6 +16,7 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceBootstrap } from "@/project/bootstrap"
+import { Truncate } from "@/tool/truncate"
 
 const it = testEffect(
   AppNodeBuilder.build(
@@ -206,6 +207,51 @@ describe("step-finish token propagation via event", () => {
 })
 
 describe("Session", () => {
+  it.instance("bounds every persisted tool error and saves the full text", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const info = yield* Effect.acquireRelease(session.create({ title: "tool-error" }), (created) =>
+        session.remove(created.id).pipe(Effect.ignore),
+      )
+      const messageID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: messageID,
+        sessionID: info.id,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "build",
+        model: { providerID: "test", modelID: "test" },
+      } as unknown as SessionV1.Info)
+
+      const error = `ERROR_HEAD:${"e".repeat(15_000)}GIANT_MIDDLE${"r".repeat(15_000)}:ERROR_TAIL`
+      const part = yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID,
+        sessionID: info.id,
+        type: "tool",
+        tool: "lookup",
+        callID: "call-1",
+        state: {
+          status: "error",
+          input: {},
+          error,
+          time: { start: Date.now(), end: Date.now() },
+        },
+      } satisfies SessionV1.ToolPart)
+
+      expect(part.state.status).toBe("error")
+      if (part.state.status !== "error") return
+      expect(part.state.error.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
+      expect(part.state.error).toContain("ERROR_HEAD")
+      expect(part.state.error).toContain("ERROR_TAIL")
+      expect(part.state.error).not.toContain("GIANT_MIDDLE")
+      const outputPath = part.state.error.match(/full error was saved to: (.+)\n/)?.[1]
+      expect(outputPath).toBeDefined()
+      if (!outputPath) throw new Error("expected full error path")
+      expect(yield* Effect.promise(() => Bun.file(outputPath).text())).toBe(error)
+    }),
+  )
+
   it.live("remove works without an instance", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
