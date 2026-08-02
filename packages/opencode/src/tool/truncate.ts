@@ -13,23 +13,11 @@ import { TRUNCATION_DIR } from "./truncation-dir"
 const RETENTION = Duration.days(7)
 
 export const MAX_LINES = 2000
-export const MAX_BYTES = 50 * 1024
-export const MAX_ERROR_CHARS = 10_000
+export const MAX_BYTES = 40 * 1024
 export const DIR = TRUNCATION_DIR
 export const GLOB = path.join(TRUNCATION_DIR, "*")
 
-export type Result = { content: string; truncated: false } | { content: string; truncated: true; outputPath: string }
-export type ErrorResult = { content: string; truncated: boolean; outputPath?: string }
-
-export function errorPreview(text: string, outputPath?: string) {
-  const notice = (omitted: number) =>
-    outputPath
-      ? `\n\n...${omitted} characters truncated...\n\nThe tool call failed and the full error was saved to: ${outputPath}\nUse Grep to search the full error or Read with offset/limit to inspect specific sections.\n\n`
-      : `\n\n...${omitted} characters truncated...\n\nThe tool call failed, and the full error could not be saved.\n\n`
-  const context = Math.max(0, Math.floor((MAX_ERROR_CHARS - notice(text.length).length) / 2))
-  const omitted = text.length - context * 2
-  return `${text.slice(0, context)}${notice(omitted)}${context === 0 ? "" : text.slice(-context)}`
-}
+export type Result = { content: string; truncated: false } | { content: string; truncated: true; outputPath?: string }
 
 export interface Options {
   maxLines?: number
@@ -45,11 +33,6 @@ function hasTaskTool(agent?: Agent.Info) {
 export interface Interface {
   readonly cleanup: () => Effect.Effect<void>
   readonly write: (text: string) => Effect.Effect<string>
-  /**
-   * Keeps short tool errors unchanged. Larger errors are written to the same
-   * retained output store and replaced with a bounded head/tail preview.
-   */
-  readonly error: (text: string) => Effect.Effect<ErrorResult>
   /**
    * Returns output unchanged when it fits within the limits, otherwise writes the full text
    * to the truncation directory and returns a preview plus a hint to inspect the saved file.
@@ -87,21 +70,6 @@ const layer = Layer.effect(
       yield* fs.ensureDir(TRUNCATION_DIR).pipe(Effect.orDie)
       yield* fs.writeFileString(file, text).pipe(Effect.orDie)
       return file
-    })
-
-    const error = Effect.fn("Truncate.error")(function* (text: string) {
-      if (text.length <= MAX_ERROR_CHARS) return { content: text, truncated: false } as const
-
-      const saved = yield* write(text).pipe(Effect.exit)
-      const file = Exit.isSuccess(saved) ? saved.value : undefined
-      if (Exit.isFailure(saved)) {
-        yield* Effect.logWarning("failed to save full tool error", { cause: Cause.pretty(saved.cause) })
-      }
-      return {
-        content: errorPreview(text, file),
-        truncated: true,
-        ...(file ? { outputPath: file } : {}),
-      } as const
     })
 
     const limits = Effect.fn("Truncate.limits")(function* () {
@@ -156,11 +124,17 @@ const layer = Layer.effect(
       const removed = hitBytes ? totalBytes - bytes : lines.length - out.length
       const unit = hitBytes ? "bytes" : "lines"
       const preview = out.join("\n")
-      const file = yield* write(text)
+      const saved = yield* write(text).pipe(Effect.exit)
+      const file = Exit.isSuccess(saved) ? saved.value : undefined
+      if (Exit.isFailure(saved)) {
+        yield* Effect.logWarning("failed to save full truncated tool response", { cause: Cause.pretty(saved.cause) })
+      }
 
-      const hint = hasTaskTool(agent)
-        ? `The tool call succeeded but the output was truncated. Full output saved to: ${file}\nUse the Task tool to have explore agent process this file with Grep and Read (with offset/limit). Do NOT read the full file yourself - delegate to save context.`
-        : `The tool call succeeded but the output was truncated. Full output saved to: ${file}\nUse Grep to search the full content or Read with offset/limit to view specific sections.`
+      const hint = file
+        ? hasTaskTool(agent)
+          ? `The tool response was truncated. Full content saved to: ${file}\nUse the Task tool to have explore agent process this file with Grep and Read (with offset/limit). Do NOT read the full file yourself - delegate to save context.`
+          : `The tool response was truncated. Full content saved to: ${file}\nUse Grep to search the full content or Read with offset/limit to view specific sections.`
+        : "The tool response was truncated, and the full content could not be saved."
 
       return {
         content:
@@ -168,7 +142,7 @@ const layer = Layer.effect(
             ? `${preview}\n\n...${removed} ${unit} truncated...\n\n${hint}`
             : `...${removed} ${unit} truncated...\n\n${hint}\n\n${preview}`,
         truncated: true,
-        outputPath: file,
+        ...(file ? { outputPath: file } : {}),
       } as const
     })
 
@@ -179,7 +153,7 @@ const layer = Layer.effect(
       Effect.forkScoped,
     )
 
-    return Service.of({ cleanup, write, error, output, limits })
+    return Service.of({ cleanup, write, output, limits })
   }),
 )
 

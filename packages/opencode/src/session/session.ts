@@ -639,7 +639,7 @@ const layer: Layer.Layer<
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
         if (part.type === "tool" && part.state.status === "error") {
-          const bounded = yield* truncate.error(part.state.error)
+          const bounded = yield* truncate.output(part.state.error)
           part.state.error = bounded.content
         }
         yield* events.publish(SessionV1.Event.PartUpdated, {
