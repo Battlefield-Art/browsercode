@@ -165,6 +165,26 @@ const layer = Layer.effect(
         return { call, part }
       })
 
+      const resetOutputLimit = Effect.fn("SessionProcessor.resetOutputLimit")(function* () {
+        const parts = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        // Replace the streamed partial before resampling the unchanged request.
+        // Keep step-finish so usage from the billed attempt remains accounted for.
+        yield* Effect.forEach(
+          parts.filter((part) => part.type !== "step-finish"),
+          (part) =>
+            session.removePart({
+              sessionID: part.sessionID,
+              messageID: part.messageID,
+              partID: part.id,
+            }),
+          { concurrency: "unbounded" },
+        )
+        ctx.assistantMessage.finish = undefined
+        yield* session.updateMessage(ctx.assistantMessage)
+      })
+
       const updateToolCall = Effect.fn("SessionProcessor.updateToolCall")(function* (
         toolCallID: string,
         update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -480,6 +500,7 @@ const layer = Layer.effect(
               cost: usage.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
+            if (value.reason === "length") throw new SessionV1.OutputLengthError({})
             if (ctx.snapshot) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {
@@ -687,6 +708,9 @@ const layer = Layer.effect(
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
+            ),
+            Effect.tapError((error) =>
+              SessionV1.OutputLengthError.isInstance(error) ? resetOutputLimit() : Effect.void,
             ),
             Effect.retry(
               SessionRetry.policy({

@@ -76,6 +76,7 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
 }
 
 export function retryable(error: Err, provider: string) {
+  if (SessionV1.OutputLengthError.isInstance(error)) return { message: "Model hit its output limit" }
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
