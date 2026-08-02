@@ -1,9 +1,10 @@
 import { describe, test, expect } from "bun:test"
+import { JSONParseError } from "@ai-sdk/provider"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { filesystem } from "@opencode-ai/core/effect/app-node-platform"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Effect, FileSystem } from "effect"
+import { Effect, FileSystem, Layer } from "effect"
 import { Truncate } from "@/tool/truncate"
 import { Config } from "@/config/config"
 import { Identifier } from "../../src/id/id"
@@ -12,11 +13,26 @@ import path from "path"
 import { testEffect } from "../lib/effect"
 import { writeFileStringScoped } from "../lib/filesystem"
 import { TestConfig } from "../fixture/config"
+import { InvalidToolInputError } from "ai"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
 const ROOT = path.resolve(import.meta.dir, "..", "..")
 
 const it = testEffect(LayerNode.compile(LayerNode.group([Truncate.node, FSUtil.node, filesystem])))
+const failedWriteFS = Layer.effect(
+  FSUtil.Service,
+  FSUtil.Service.pipe(
+    Effect.map((fs) =>
+      FSUtil.Service.of({
+        ...fs,
+        writeFileString: () => Effect.die("blocked test write"),
+      }),
+    ),
+  ),
+).pipe(Layer.provide(LayerNode.compile(FSUtil.node)))
+const failedWriteIt = testEffect(
+  LayerNode.compile(LayerNode.group([Truncate.node, FSUtil.node, filesystem]), [[FSUtil.node, failedWriteFS]]),
+)
 
 const configuredLayer = (cfg: ConfigV1.Info) =>
   LayerNode.compile(LayerNode.group([Truncate.node, FSUtil.node, filesystem, Config.node]), [
@@ -102,7 +118,7 @@ describe("Truncate", () => {
 
     test("uses default MAX_LINES and MAX_BYTES", () => {
       expect(Truncate.MAX_LINES).toBe(2000)
-      expect(Truncate.MAX_BYTES).toBe(50 * 1024)
+      expect(Truncate.MAX_BYTES).toBe(40 * 1024)
     })
 
     it.live("limits() falls back to MAX_LINES/MAX_BYTES when Config is not provided", () =>
@@ -180,7 +196,7 @@ describe("Truncate", () => {
         const result = yield* svc.output(lines, { maxLines: 10 })
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("The tool call succeeded but the output was truncated")
+        expect(result.content).toContain("The tool response was truncated")
         expect(result.content).toContain("Grep")
         if (!result.truncated) throw new Error("expected truncated")
         expect(result.outputPath).toBeDefined()
@@ -189,6 +205,45 @@ describe("Truncate", () => {
         const fsys = yield* FSUtil.Service
         const written = yield* fsys.readFileString(result.outputPath!)
         expect(written).toBe(lines)
+      }),
+    )
+
+    it.live("archives the production-shaped malformed tool error", () =>
+      Effect.gen(function* () {
+        const malformed =
+          '{"description":"Test resumed player extraction","code":"const x=1;' + "\n\t".repeat(118_000) + '"}'
+        let cause: unknown
+        try {
+          JSON.parse(malformed)
+        } catch (error) {
+          cause = error
+        }
+        if (!cause) throw new Error("expected malformed input to fail JSON parsing")
+
+        const failed = new InvalidToolInputError({
+          toolName: "browser_execute",
+          toolInput: malformed,
+          cause: new JSONParseError({ text: malformed, cause }),
+        })
+        const result = yield* (yield* Truncate.Service).output(failed.message)
+        expect(result.truncated).toBe(true)
+        if (!result.truncated || !result.outputPath) throw new Error("expected archived malformed-tool error")
+
+        const stored = JSON.stringify({ tool: "browser_execute", error: result.content })
+        expect(stored.length).toBeLessThanOrEqual(Truncate.MAX_BYTES)
+        expect(JSON.parse(stored).error).toContain(result.outputPath)
+        expect(yield* (yield* FSUtil.Service).readFileString(result.outputPath)).toBe(failed.message)
+      }),
+    )
+
+    failedWriteIt.live("keeps a bounded response when the full content cannot be saved", () =>
+      Effect.gen(function* () {
+        const result = yield* (yield* Truncate.Service).output("x".repeat(Truncate.MAX_BYTES + 1))
+
+        expect(result.truncated).toBe(true)
+        if (!result.truncated) throw new Error("expected truncated output")
+        expect(result.outputPath).toBeUndefined()
+        expect(result.content).toContain("full content could not be saved")
       }),
     )
 

@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { Truncate } from "@/tool/truncate"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -70,6 +71,7 @@ const live: Layer.Layer<
   | EventV2Bridge.Service
   | LLMClientService
   | RuntimeFlags.Service
+  | Truncate.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -81,6 +83,7 @@ const live: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const truncate = yield* Truncate.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
@@ -142,7 +145,8 @@ const live: Layer.Layer<
               title: typeof result === "object" ? result?.title : undefined,
             }
           } catch (e: any) {
-            return { result: "", error: e.message ?? String(e) }
+            const error = await bridge.promise(truncate.output(e.message ?? String(e)))
+            return { result: "", error: error.content }
           }
         }
 
@@ -301,11 +305,12 @@ const live: Layer.Layer<
                 toolName: lower,
               }
             }
+            const error = await bridge.promise(truncate.output(failed.error.message))
             return {
               ...failed.toolCall,
               input: JSON.stringify({
                 tool: failed.toolCall.toolName,
-                error: failed.error.message,
+                error: error.content,
               }),
               toolName: "invalid",
             }
@@ -398,6 +403,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     llmClient,
     RuntimeFlags.node,
+    Truncate.node,
   ],
 })
 
