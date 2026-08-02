@@ -116,7 +116,7 @@ describe("session.retry.delay", () => {
     }),
   )
 
-  it.instance("policy caps output-length errors at three retries", () =>
+  it.instance("policy caps output-length errors at two retries", () =>
     Effect.gen(function* () {
       const error = new SessionV1.OutputLengthError({}).toObject()
       const attempts: number[] = []
@@ -130,11 +130,10 @@ describe("session.retry.delay", () => {
 
       yield* step(0, error)
       yield* step(0, error)
-      yield* step(0, error)
-      const fourth = yield* step(0, error).pipe(Effect.exit)
+      const third = yield* step(0, error).pipe(Effect.exit)
 
-      expect(attempts).toStrictEqual([1, 2, 3])
-      expect(Exit.isFailure(fourth)).toBe(true)
+      expect(attempts).toStrictEqual([1, 2])
+      expect(Exit.isFailure(third)).toBe(true)
     }),
   )
 })
