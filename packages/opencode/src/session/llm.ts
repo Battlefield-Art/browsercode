@@ -37,18 +37,24 @@ const TOOL_CALL_ERROR_MAX_CHARS = Truncate.MAX_ERROR_CHARS
 const TOOL_CALL_ERROR_CONTEXT_CHARS = Math.floor(TOOL_CALL_ERROR_MAX_CHARS / 2)
 const TOOL_CALL_NAME_MAX_CHARS = 256
 
-export function invalidToolCallInput(tool: string, message: string) {
-  const exact = JSON.stringify({ tool, error: message })
+export function invalidToolCallInput(
+  tool: string,
+  message: string,
+  options?: { originalChars?: number; outputPath?: string },
+) {
+  const detail = options?.outputPath ? `${message}\n\nFull error saved to: ${options.outputPath}` : message
+  const exact = JSON.stringify({ tool, error: detail })
   if (exact.length <= TOOL_CALL_ERROR_MAX_CHARS) return exact
 
   const name = tool.length <= TOOL_CALL_NAME_MAX_CHARS ? tool : `${tool.slice(0, TOOL_CALL_NAME_MAX_CHARS - 3)}...`
-  const maximum = Math.min(TOOL_CALL_ERROR_CONTEXT_CHARS, Math.floor(message.length / 2))
+  const maximum = Math.min(TOOL_CALL_ERROR_CONTEXT_CHARS, Math.floor(detail.length / 2))
+  const omission = `... error truncated; original contained ${options?.originalChars ?? message.length} characters ...`
   let lower = 0
   let upper = maximum
-  let result = JSON.stringify({ tool: name, error: `... ${message.length} characters omitted ...` })
+  let result = JSON.stringify({ tool: name, error: omission })
   while (lower <= upper) {
     const context = Math.floor((lower + upper) / 2)
-    const error = `${message.slice(0, context)}\n... ${message.length - context * 2} characters omitted ...\n${context === 0 ? "" : message.slice(-context)}`
+    const error = `${detail.slice(0, context)}\n${omission}\n${context === 0 ? "" : detail.slice(-context)}`
     const candidate = JSON.stringify({ tool: name, error })
     if (candidate.length > TOOL_CALL_ERROR_MAX_CHARS) {
       upper = context - 1
@@ -335,7 +341,10 @@ const live: Layer.Layer<
             const error = await bridge.promise(truncate.error(failed.error.message))
             return {
               ...failed.toolCall,
-              input: invalidToolCallInput(failed.toolCall.toolName, error.content),
+              input: invalidToolCallInput(failed.toolCall.toolName, error.content, {
+                originalChars: failed.error.message.length,
+                outputPath: error.outputPath,
+              }),
               toolName: "invalid",
             }
           },

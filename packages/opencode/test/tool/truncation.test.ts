@@ -51,10 +51,23 @@ describe("Truncate", () => {
         expect(result.content).not.toContain("GIANT_MIDDLE")
         expect(result.content).toContain("the full error was saved to")
         if (!result.truncated) throw new Error("expected truncated")
+        expect(result.outputPath).toBeDefined()
+        if (!result.outputPath) throw new Error("expected full error path")
         expect(result.content).toContain(result.outputPath)
         expect(yield* (yield* FSUtil.Service).readFileString(result.outputPath)).toBe(content)
       }),
     )
+
+    test("keeps a bounded preview when the full text cannot be saved", () => {
+      const content = `ERROR_HEAD:${"h".repeat(15_000)}GIANT_MIDDLE${"t".repeat(15_000)}:ERROR_TAIL`
+      const result = Truncate.errorPreview(content)
+
+      expect(result.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
+      expect(result).toContain("ERROR_HEAD")
+      expect(result).toContain("ERROR_TAIL")
+      expect(result).not.toContain("GIANT_MIDDLE")
+      expect(result).toContain("full error could not be saved")
+    })
   })
 
   describe("output", () => {

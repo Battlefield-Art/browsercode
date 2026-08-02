@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { NodePath } from "@effect/platform-node"
-import { Cause, Duration, Effect, Layer, Option, Schedule, Context } from "effect"
+import { Cause, Duration, Effect, Exit, Layer, Option, Schedule, Context } from "effect"
 import path from "path"
 import type { Agent } from "../agent/agent"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -19,6 +19,17 @@ export const DIR = TRUNCATION_DIR
 export const GLOB = path.join(TRUNCATION_DIR, "*")
 
 export type Result = { content: string; truncated: false } | { content: string; truncated: true; outputPath: string }
+export type ErrorResult = { content: string; truncated: boolean; outputPath?: string }
+
+export function errorPreview(text: string, outputPath?: string) {
+  const notice = (omitted: number) =>
+    outputPath
+      ? `\n\n...${omitted} characters truncated...\n\nThe tool call failed and the full error was saved to: ${outputPath}\nUse Grep to search the full error or Read with offset/limit to inspect specific sections.\n\n`
+      : `\n\n...${omitted} characters truncated...\n\nThe tool call failed, and the full error could not be saved.\n\n`
+  const context = Math.max(0, Math.floor((MAX_ERROR_CHARS - notice(text.length).length) / 2))
+  const omitted = text.length - context * 2
+  return `${text.slice(0, context)}${notice(omitted)}${context === 0 ? "" : text.slice(-context)}`
+}
 
 export interface Options {
   maxLines?: number
@@ -38,7 +49,7 @@ export interface Interface {
    * Keeps short tool errors unchanged. Larger errors are written to the same
    * retained output store and replaced with a bounded head/tail preview.
    */
-  readonly error: (text: string) => Effect.Effect<Result>
+  readonly error: (text: string) => Effect.Effect<ErrorResult>
   /**
    * Returns output unchanged when it fits within the limits, otherwise writes the full text
    * to the truncation directory and returns a preview plus a hint to inspect the saved file.
@@ -81,15 +92,15 @@ const layer = Layer.effect(
     const error = Effect.fn("Truncate.error")(function* (text: string) {
       if (text.length <= MAX_ERROR_CHARS) return { content: text, truncated: false } as const
 
-      const file = yield* write(text)
-      const notice = (omitted: number) =>
-        `\n\n...${omitted} characters truncated...\n\nThe tool call failed and the full error was saved to: ${file}\nUse Grep to search the full error or Read with offset/limit to inspect specific sections.\n\n`
-      const context = Math.max(0, Math.floor((MAX_ERROR_CHARS - notice(text.length).length) / 2))
-      const omitted = text.length - context * 2
+      const saved = yield* write(text).pipe(Effect.exit)
+      const file = Exit.isSuccess(saved) ? saved.value : undefined
+      if (Exit.isFailure(saved)) {
+        yield* Effect.logWarning("failed to save full tool error", { cause: Cause.pretty(saved.cause) })
+      }
       return {
-        content: `${text.slice(0, context)}${notice(omitted)}${context === 0 ? "" : text.slice(-context)}`,
+        content: errorPreview(text, file),
         truncated: true,
-        outputPath: file,
+        ...(file ? { outputPath: file } : {}),
       } as const
     })
 

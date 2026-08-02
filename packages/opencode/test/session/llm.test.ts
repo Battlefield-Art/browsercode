@@ -198,7 +198,7 @@ describe("session.llm.invalidToolCallInput", () => {
     const storedSchema = z.object({ tool: z.string(), error: z.string() })
     const stored = LLM.invalidToolCallInput("lookup", failed.message)
     const repaired = storedSchema.parse(JSON.parse(stored))
-    const omission = repaired.error.match(/\n\.\.\. (\d+) characters omitted \.\.\.\n/)
+    const omission = repaired.error.match(/\.\.\. error truncated; original contained (\d+) characters \.\.\./)
 
     expect(stored.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
     expect(repaired.error.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
@@ -208,7 +208,7 @@ describe("session.llm.invalidToolCallInput", () => {
     expect(repaired.error).toContain("JSON Parse error: Unterminated string")
     expect(omission).not.toBeNull()
     if (!omission) throw new Error("expected repaired error to report omitted characters")
-    expect(Number(omission[1])).toBe(failed.message.length - (repaired.error.length - omission[0].length))
+    expect(Number(omission[1])).toBe(failed.message.length)
     expect(repaired.error).not.toContain(dropped)
 
     const short = "short tool error with exact whitespace\n"
@@ -229,9 +229,16 @@ describe("session.llm.invalidToolCallInput", () => {
       toolInput: whitespaceMalformed,
       cause: new JSONParseError({ text: whitespaceMalformed, cause: whitespaceCause }),
     })
-    const boundedWhitespace = LLM.invalidToolCallInput("browser_execute", whitespaceError.message)
+    const outputPath = "/tmp/tool-output/tool_full_error"
+    const boundedWhitespace = LLM.invalidToolCallInput("browser_execute", whitespaceError.message, {
+      originalChars: whitespaceError.message.length,
+      outputPath,
+    })
     expect(boundedWhitespace.length).toBeLessThanOrEqual(Truncate.MAX_ERROR_CHARS)
-    expect(JSON.parse(boundedWhitespace).error).toContain("characters omitted")
+    expect(JSON.parse(boundedWhitespace).error).toContain(
+      `original contained ${whitespaceError.message.length} characters`,
+    )
+    expect(JSON.parse(boundedWhitespace).error).toContain(outputPath)
   })
 })
 
