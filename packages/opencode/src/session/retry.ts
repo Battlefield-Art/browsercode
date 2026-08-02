@@ -23,6 +23,7 @@ export type RetryReason = "free_tier_limit" | "account_rate_limit" | (string & {
 
 export type Retryable = {
   message: string
+  maxAttempts?: number
   action?: {
     reason: RetryReason
     provider: string
@@ -76,6 +77,9 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
 }
 
 export function retryable(error: Err, provider: string) {
+  if (SessionV1.OutputLengthError.isInstance(error)) {
+    return { message: "Model hit its output limit", maxAttempts: 3 }
+  }
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
@@ -186,6 +190,7 @@ function parseJSON(value: unknown) {
 export function policy(opts: {
   provider: string
   parse: (error: unknown) => Err
+  onRetry?: (error: Err) => Effect.Effect<void>
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
   return Schedule.fromStepWithMetadata(
@@ -193,7 +198,9 @@ export function policy(opts: {
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
+      if (retry.maxAttempts !== undefined && meta.attempt >= retry.maxAttempts) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
+        if (opts.onRetry) yield* opts.onRetry(error)
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
