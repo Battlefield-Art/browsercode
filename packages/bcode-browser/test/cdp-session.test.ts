@@ -81,6 +81,12 @@ test("waitFor throws on a positional timeout rather than silently using the 30s 
   expect(Date.now() - started).toBeLessThan(1_000)
 })
 
+test("inactive executions cannot start a waiter", () => {
+  expect(() =>
+    withSessionExecution({ active: false }, () => session.waitFor("Test.late", { timeoutMs: 10 })),
+  ).toThrow("browser_execute call already timed out")
+})
+
 test("event callbacks retain the execution scope that registered them", async () => {
   const execution = { active: true }
   let callbackError = "callback did not run"

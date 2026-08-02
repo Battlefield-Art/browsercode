@@ -283,6 +283,7 @@ export class Session implements Transport {
     opts: { predicate?: (params: T) => boolean; timeoutMs?: number } = {},
     ...rest: never[]
   ): Promise<T> {
+    assertExecutionActive();
     // Both legacy positional shapes fail loudly rather than silently reverting
     // to the 30s default: `(method, predicate)` lands on the first guard,
     // `(method, predicate?, timeoutMs)` on the second. Snippets are written at
