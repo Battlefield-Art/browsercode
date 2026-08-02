@@ -110,6 +110,8 @@ If a target-scoped command throws `CdpError` code `-32001` (`Session with given 
 
 Every explicit reconnect or browser switch retires the previous socket and clears its active target attachment. Re-list targets, call `session.use(...)`, and rediscover DOM nodes and Runtime objects before continuing.
 
+New tabs and windows are separate targets with `type: "page"`; opening one does not move the current attachment, so `Page`/`Runtime` commands still go to the old tab and waiting for a page event does not switch to the new one. If the task continues in the new tab, re-list targets, identify the intended page by URL, title, or `targetId` rather than list position or an iframe/OOPIF target, then call `session.use(targetId)`.
+
 ## Driving a page
 Domain methods follow `session.<Domain>.<method>(params)` and return Promises. 
 The full surface (652 commands) is the Chrome DevTools Protocol.
@@ -200,7 +202,7 @@ console.log(JSON.stringify(titles))
 ## Guardrails
 - Top-level `import` statements inside the snippet body are not allowed. Use `await import(...)` instead.
 - No CPU-bound infinite loops without `await` — they ignore the timeout. Insert `await new Promise(r => setTimeout(r, 0))` to yield.
-- `browser_execute` defaults to 60s (max 600s). For longer work, set the tool's top-level `timeout`; inner CDP timeouts do not extend it. Keep batches small and log progress — timeout errors return recent logs, and a timeout resets the CDP session. Reconnect deliberately after a timeout so a run that switched browsers cannot silently return to its original browser.
+- `browser_execute` defaults to 60s (max 600s). For longer work, set the tool's top-level `timeout`; inner CDP timeouts do not extend it. Keep batches small and log progress. After a timeout, the same CDP session and active target are preserved; inspect the current page state in the next call and reconnect only if the socket actually closed.
 
 ## Console
 - `console.log`, `console.error`, `console.warn`, `console.info`, `console.debug` are all captured and streamed to the user. Treat them as your stdout. Other `console.*` methods write to bcode's stderr without being captured into the tool result.

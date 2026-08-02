@@ -6,11 +6,27 @@
  * Target.sendMessageToTarget envelopes).
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { bindDomains, type Domains, type Transport } from './generated.ts';
 
 type Pending = {
   resolve: (v: unknown) => void;
   reject: (e: unknown) => void;
+};
+
+export type SessionExecution = { active: boolean };
+
+const sessionExecution = new AsyncLocalStorage<SessionExecution>();
+
+export const withSessionExecution = <T>(
+  execution: SessionExecution,
+  run: () => T,
+): T => sessionExecution.run(execution, run);
+
+const assertExecutionActive = (): void => {
+  if (sessionExecution.getStore()?.active === false) {
+    throw new Error('browser_execute call already timed out');
+  }
 };
 
 export type ConnectOptions = {
@@ -80,6 +96,7 @@ export class Session implements Transport {
    * and we connect directly to the supplied endpoint.
    */
   async connect(opts: ConnectOptions = {}): Promise<void> {
+    assertExecutionActive();
     if (this.invalidatedError) throw this.invalidatedError;
     const timeoutMs = opts.timeoutMs ?? 5_000;
     if (opts.wsUrl || opts.profileDir) {
@@ -117,6 +134,7 @@ export class Session implements Transport {
   }
 
   private openWs(wsUrl: string, timeoutMs: number): Promise<void> {
+    assertExecutionActive();
     // Re-checked here (not only in connect) because connect awaits resolver/
     // detection steps first — an invalidation landing during those must not
     // open a late socket for a retired Session.
@@ -170,21 +188,20 @@ export class Session implements Transport {
   }
 
   close(): void {
+    assertExecutionActive();
     this.ws?.close();
   }
 
   /**
    * Permanently retire this Session object.
    *
-   * `browser_execute` timeouts cannot preempt the snippet's Promise — the
-   * orphan keeps running and would otherwise share this object (and its
-   * socket) with the next tool call, interleaving two authors on one
-   * transport. Invalidation rejects all future `connect`/`_call` attempts
-   * and closes the socket (the close handler rejects in-flight calls);
-   * `SessionStore.invalidate` removes the entry so the next call gets a
-   * fresh Session.
+   * Invalidation rejects all future `connect`/`_call` attempts and closes the
+   * socket; `SessionStore.invalidate` removes the entry so a later lookup gets
+   * a fresh Session. `browser_execute` timeouts use scoped execution instead,
+   * preserving this object and its browser connection for the next call.
    */
   invalidate(error: Error): void {
+    assertExecutionActive();
     if (this.invalidatedError) return;
     this.invalidatedError = error;
     const ws = this.ws;
@@ -199,12 +216,14 @@ export class Session implements Transport {
    */
   async use(targetId: string): Promise<string> {
     const r = await this._call('Target.attachToTarget', { targetId, flatten: true }) as { sessionId: string };
+    assertExecutionActive();
     this.activeSessionId = r.sessionId;
     return r.sessionId;
   }
 
   /** Set the active sessionId directly (e.g. one you already attached). */
   setActiveSession(sessionId: string | undefined): void {
+    assertExecutionActive();
     this.activeSessionId = sessionId;
   }
 
@@ -214,9 +233,19 @@ export class Session implements Transport {
 
   /** Subscribe to all CDP events. Returns an unsubscribe fn. */
   onEvent(fn: (method: string, params: unknown, sessionId?: string) => void): () => void {
-    this.eventListeners.push(fn);
+    assertExecutionActive();
+    // WebSocket events arrive in the socket's async context, not the context
+    // where the listener was registered. Restore that registration context so
+    // callbacks created by a timed-out browser_execute call cannot keep using
+    // the persistent Session after their execution scope is deactivated.
+    const execution = sessionExecution.getStore();
+    const listener = execution
+      ? (method: string, params: unknown, sessionId?: string) =>
+          sessionExecution.run(execution, () => fn(method, params, sessionId))
+      : fn;
+    this.eventListeners.push(listener);
     return () => {
-      this.eventListeners = this.eventListeners.filter(x => x !== fn);
+      this.eventListeners = this.eventListeners.filter(x => x !== listener);
     };
   }
 
@@ -231,9 +260,15 @@ export class Session implements Transport {
    * agnostic of any one method's semantics.
    */
   onCallResult(fn: (method: string, params: unknown, result: unknown) => void): () => void {
-    this.callResultListeners.push(fn);
+    assertExecutionActive();
+    const execution = sessionExecution.getStore();
+    const listener = execution
+      ? (method: string, params: unknown, result: unknown) =>
+          sessionExecution.run(execution, () => fn(method, params, result))
+      : fn;
+    this.callResultListeners.push(listener);
     return () => {
-      this.callResultListeners = this.callResultListeners.filter(x => x !== fn);
+      this.callResultListeners = this.callResultListeners.filter(x => x !== listener);
     };
   }
 
@@ -249,6 +284,7 @@ export class Session implements Transport {
     opts: { predicate?: (params: T) => boolean; timeoutMs?: number } = {},
     ...rest: never[]
   ): Promise<T> {
+    assertExecutionActive();
     // Both legacy positional shapes fail loudly rather than silently reverting
     // to the 30s default: `(method, predicate)` lands on the first guard,
     // `(method, predicate?, timeoutMs)` on the second. Snippets are written at
@@ -288,6 +324,7 @@ export class Session implements Transport {
 
   // Transport implementation. Called by the generated domain bindings.
   _call(method: string, params: unknown = {}): Promise<unknown> {
+    assertExecutionActive();
     if (this.invalidatedError) return Promise.reject(this.invalidatedError);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('Not connected. Call session.connect(...) first.'));

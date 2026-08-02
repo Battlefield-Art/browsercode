@@ -225,9 +225,9 @@ test("console.debug is captured; uncommon methods fall through without throwing"
 })
 
 // Timeout isolation: a timed-out snippet keeps running as an orphan (JS
-// Promises are not preemptible), so the tool must retire the Session object
-// the snippet received and surface captured output in the error. No Chrome
-// required — the snippets sleep without touching the browser.
+// Promises are not preemptible), so its scoped Session view must stop working
+// while the persistent Session remains available to the next call. Browser
+// behavior is covered by browser-auto-connect; these snippets need no Chrome.
 const runTimeout = async (id: string, code: string, timeout: number, onChunk?: (o: string) => Effect.Effect<void>) => {
   const data = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-to-"))
   const ws = await fs.mkdtemp(path.join(os.tmpdir(), "bcode-to-ws-"))
@@ -249,7 +249,7 @@ const runTimeout = async (id: string, code: string, timeout: number, onChunk?: (
   return err
 }
 
-test("timeout returns partial output and retires the session", async () => {
+test("timeout returns partial output and preserves the session", async () => {
   const id = "timeout-isolation-test"
   const before = SessionStore.get(id)
   const err = await runTimeout(
@@ -261,12 +261,10 @@ test("timeout returns partial output and retires the session", async () => {
   expect(err).toContain("timed out after 100 ms")
   expect(err).toContain("Partial console output before timeout:")
   expect(err).toContain("progress-marker")
-  // The orphan's Session is permanently dead...
+  // The next call gets the exact same persistent Session. The orphan only had
+  // a scoped view, whose post-timeout CDP behavior is covered by the V4 test.
   expect(before.isConnected()).toBe(false)
-  await expect(before.connect({ wsUrl: "ws://127.0.0.1:9/nope" })).rejects.toThrow(/timed out after 100 ms/)
-  await expect(before.domains.Runtime.evaluate({ expression: "1" })).rejects.toThrow(/timed out after 100 ms/)
-  // ...and the next tool call gets a fresh one.
-  expect(SessionStore.get(id)).not.toBe(before)
+  expect(SessionStore.get(id)).toBe(before)
   await SessionStore.evict(id)
 })
 
@@ -294,7 +292,7 @@ test("re-running the execute effect after a timeout gets fresh state", async () 
   const impl = await Effect.runPromise(BrowserExecute.make(data))
   // One Effect value, run twice. Each run must resolve its own Session and
   // capture buffer — the second run's error must carry its own partial
-  // output, not inherit the first run's frozen capture or retired Session.
+  // output, not inherit the first run's frozen capture or scoped view.
   // onChunk deliveries discriminate: a run that inherited a frozen capture
   // buffer never tees, so it produces zero chunks (the frozen buffer still
   // *contains* run 1's text, which is why asserting on the error message

@@ -35,13 +35,10 @@
 //
 // Cancellation: JS Promises are not preemptively cancellable. A snippet
 // without `await` yield-points (e.g. `for (let i = 0; i < 1e9; i++) {}`)
-// runs to completion before our timeout fiber observes it. When a yielding
-// snippet times out, its Promise keeps running as an orphan — so on timeout
-// we retire the exact Session object the snippet received (rejects future
-// connect/_call, closes the socket) and evict it from SessionStore. The
-// orphan can finish local work but cannot keep driving the browser, and the
-// next tool call gets a fresh Session instead of sharing a socket with it.
-// The timeout error carries the console output captured so far.
+// runs to completion before our timeout fiber observes it. A yielding snippet
+// keeps running as an orphan after timeout, so each call receives a scoped
+// Session view. The view rejects methods after its deadline while the real
+// Session and its tabs remain available to the next call.
 //
 // Level 1 per decisions.md §1c — substantial implementation lives here. The
 // Level-2 hook in packages/opencode is a thin adapter.
@@ -49,6 +46,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { Effect, Schema } from "effect"
+import { withSessionExecution } from "./cdp/session"
 import { SessionStore } from "./session-store"
 import { Skills } from "./skills"
 
@@ -175,13 +173,13 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
   const skillsDir = yield* Effect.promise(() => Skills.resolveSkillsDir(dataDir))
 
   // Effect values are re-runnable, so per-run state lives inside the suspend
-  // thunk: each run resolves its own Session (the timeout handler retires
-  // exactly that object) and its own capture buffer (a re-run after a timeout
-  // must not inherit a retired Session or a frozen capture).
+  // thunk: each run gets its own execution scope and capture buffer. A re-run
+  // after a timeout must not inherit an inactive scope or frozen capture.
   const execute = (args: Parameters, ctx: ExecuteContext) =>
     Effect.suspend(() => {
     const session = SessionStore.get(ctx.sessionID)
     const captured = { active: true, output: "" }
+    const sessionExecution = { active: true }
     const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
     return Effect.gen(function* () {
       yield* Effect.promise(() => fs.mkdir(ctx.workspaceDir, { recursive: true }))
@@ -248,7 +246,7 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
       })
 
       const ran = yield* Effect.tryPromise({
-        try: () => wrapped(session, snippetConsole),
+        try: () => withSessionExecution(sessionExecution, () => wrapped(session, snippetConsole)),
         catch: (err) => new Error(`browser_execute snippet threw: ${err instanceof Error ? err.stack ?? err.message : String(err)}`),
       }).pipe(Effect.ensuring(Effect.sync(() => unsubscribe())))
 
@@ -260,21 +258,16 @@ export const make = Effect.fn("BrowserExecute.make")(function* (dataDir: string)
         orElse: () =>
           Effect.suspend(() => {
             captured.active = false
+            sessionExecution.active = false
             const output = timeoutOutput(captured.output)
             const error = new Error(
               [
-                `browser_execute timed out after ${timeout} ms; CDP session was reset — reconnect in the next snippet`,
+                `browser_execute timed out after ${timeout} ms; the browser session remains connected`,
                 output.trim() ? `Partial console output before timeout:\n${output.trimEnd()}` : "",
               ]
                 .filter(Boolean)
                 .join("\n\n"),
             )
-            // Always retires this snippet's Session; the identity check
-            // inside only guards the store delete, so a successor Session is
-            // never evicted. A concurrent same-sessionID call would share the
-            // retired object — acceptable for v1, opencode serializes tool
-            // calls within an assistant message.
-            SessionStore.invalidate(ctx.sessionID, session, error)
             return Effect.fail(error)
           }),
       }),
@@ -304,9 +297,8 @@ async function ensureCloudConnected(sessionID: string, session: ReturnType<typeo
     await connecting
   } finally {
     // One automatic attempt per logical BrowserCode session. A later disconnect
-    // (including after timeout replacement) must be surfaced:
-    // BU_CDP_WS is the browser selected at run start, not necessarily a newer
-    // browser the agent explicitly switched to during this run.
+    // must be surfaced: BU_CDP_WS is the browser selected at run start, not
+    // necessarily a newer browser the agent explicitly switched to during this run.
     v4Bootstrapped.add(sessionID)
     if (v4Connections.get(sessionID) === connecting) v4Connections.delete(sessionID)
   }
