@@ -23,7 +23,11 @@ export type RetryReason = "free_tier_limit" | "account_rate_limit" | (string & {
 
 export type Retryable = {
   message: string
-  maxAttempts?: number
+  // Give up once the schedule's CUMULATIVE attempt count reaches this. One
+  // counter covers the whole request, so earlier retries of ANY reason spend
+  // this budget: two rate-limit retries followed by an output-limit error
+  // leaves the output-limit path none. Reasons that omit it are unbounded.
+  maxTotalAttempts?: number
   action?: {
     reason: RetryReason
     provider: string
@@ -78,7 +82,7 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
 
 export function retryable(error: Err, provider: string) {
   if (SessionV1.OutputLengthError.isInstance(error)) {
-    return { message: "Model hit its output limit", maxAttempts: 3 }
+    return { message: "Model hit its output limit", maxTotalAttempts: 3 }
   }
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
@@ -198,7 +202,10 @@ export function policy(opts: {
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
-      if (retry.maxAttempts !== undefined && meta.attempt >= retry.maxAttempts) return Cause.done(meta.attempt)
+      // `meta.attempt` is 1-based and shared by every reason (Schedule keeps one
+      // counter per request), which is why the cap reads as a total.
+      if (retry.maxTotalAttempts !== undefined && meta.attempt >= retry.maxTotalAttempts)
+        return Cause.done(meta.attempt)
       return Effect.gen(function* () {
         if (opts.onRetry) yield* opts.onRetry(error)
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
