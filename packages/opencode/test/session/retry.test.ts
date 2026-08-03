@@ -485,4 +485,53 @@ describe("session.message-v2.fromError", () => {
       message: "An error occurred while processing your request.",
     })
   })
+
+  test("converts nested OpenAI response.failed server errors to retryable APIError", () => {
+    const cases = ["server_error", "server_is_overloaded"]
+
+    cases.forEach((code) => {
+      const body = {
+        type: "response.failed",
+        sequence_number: 2,
+        response: {
+          status: "failed",
+          error: {
+            code,
+            message: `OpenAI ${code}`,
+          },
+        },
+      }
+      const result = MessageV2.fromError(
+        { message: JSON.stringify(body) },
+        { providerID: ProviderV2.ID.make("openai") },
+      )
+
+      expect(SessionV1.APIError.isInstance(result)).toBe(true)
+      if (!SessionV1.APIError.isInstance(result)) throw new Error("expected APIError")
+      expect(result.data.isRetryable).toBe(true)
+      expect(result.data.responseBody).toBe(JSON.stringify(body))
+      expect(SessionRetry.retryable(result, retryProvider)).toEqual({ message: `OpenAI ${code}` })
+    })
+  })
+
+  test("leaves other nested OpenAI response.failed errors terminal", () => {
+    const result = MessageV2.fromError(
+      {
+        message: JSON.stringify({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: {
+              code: "invalid_prompt",
+              message: "Invalid prompt from test",
+            },
+          },
+        }),
+      },
+      { providerID: ProviderV2.ID.make("openai") },
+    )
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(false)
+    expect(SessionRetry.retryable(result, retryProvider)).toBeUndefined()
+  })
 })
