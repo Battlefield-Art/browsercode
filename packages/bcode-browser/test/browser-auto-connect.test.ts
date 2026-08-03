@@ -34,6 +34,18 @@ const server = Bun.serve({
         typeof request.method !== "string"
       )
         return;
+      if (
+        request.method === "Page.navigate" &&
+        "params" in request &&
+        request.params &&
+        typeof request.params === "object" &&
+        "url" in request.params &&
+        request.params.url === "https://stuck.example"
+      ) {
+        pageCallsWithSession++;
+        setTimeout(() => ws.send(JSON.stringify({ id: request.id, result: {} })), 40);
+        return;
+      }
       const result = (() => {
         if (request.method === "Target.getTargets")
           return {
@@ -276,8 +288,10 @@ test("an explicit browser switch retires the old socket and target attachment", 
   );
 });
 
-test("a timeout replacement does not auto-attach the run-start browser again", async () => {
+test("a timeout preserves the same browser and target", async () => {
   connections = 0;
+  attachedCalls = 0;
+  pageCallsWithSession = 0;
   await withEnv(
     { V4_RUN_ID: "run-timeout", BU_CDP_WS: wsUrl, BU_CDP_URL: undefined },
     () =>
@@ -287,7 +301,10 @@ test("a timeout replacement does not auto-attach the run-start browser again", a
             impl.execute(
               {
                 description: "Time out after initial V4 bootstrap",
-                code: "await new Promise(resolve => setTimeout(resolve, 100))",
+                code: `
+                  await session.Page.navigate({ url: "https://stuck.example" })
+                  try { await session.Page.navigate({ url: "https://too-late.example" }) } catch {}
+                `,
                 timeout: 10,
               },
               { sessionID, workspaceDir },
@@ -295,18 +312,20 @@ test("a timeout replacement does not auto-attach the run-start browser again", a
           ),
         ).rejects.toThrow("browser_execute timed out");
 
-        await expect(
-          Effect.runPromise(
-            impl.execute(
-              {
-                description: "Do not silently return to the run-start browser",
-                code: "return await session.Page.navigate({ url: 'https://sap.com' })",
-              },
-              { sessionID, workspaceDir },
-            ),
+        const recovered = await Effect.runPromise(
+          impl.execute(
+            {
+              description: "Continue on the same browser",
+              code: "return await session.Page.navigate({ url: 'https://sap.com' })",
+            },
+            { sessionID, workspaceDir },
           ),
-        ).rejects.toThrow("Not connected. Call session.connect(...) first.");
+        );
+        expect(JSON.parse(recovered.result)).toEqual({});
+        await new Promise((resolve) => setTimeout(resolve, 40));
         expect(connections).toBe(1);
+        expect(attachedCalls).toBe(1);
+        expect(pageCallsWithSession).toBe(2);
       }),
   );
 });

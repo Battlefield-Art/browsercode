@@ -1,7 +1,7 @@
 // waitFor semantics against a bare WebSocket server (no Chrome needed).
 // Test structure adapted from PR #111 by @MagMueller.
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { Session } from "../src/cdp/session"
+import { Session, withSessionExecution } from "../src/cdp/session"
 
 const channel = "cdp-events"
 const server = Bun.serve({
@@ -13,7 +13,10 @@ const server = Bun.serve({
     open(ws) {
       ws.subscribe(channel)
     },
-    message() {},
+    message(ws, message) {
+      const request = JSON.parse(String(message)) as { id?: number }
+      if (typeof request.id === "number") ws.send(JSON.stringify({ id: request.id, result: {} }))
+    },
   },
 })
 const session = new Session()
@@ -76,6 +79,59 @@ test("waitFor throws on a positional timeout rather than silently using the 30s 
   const started = Date.now()
   await expect(session.waitFor("Test.never", { timeoutMs: 50 })).rejects.toThrow(/Timeout waiting for/)
   expect(Date.now() - started).toBeLessThan(1_000)
+})
+
+test("inactive executions cannot start a waiter", () => {
+  expect(() =>
+    withSessionExecution({ active: false }, () => session.waitFor("Test.late", { timeoutMs: 10 })),
+  ).toThrow("browser_execute call already timed out")
+})
+
+test("event callbacks retain the execution scope that registered them", async () => {
+  const execution = { active: true }
+  let callbackError = "callback did not run"
+  const unsubscribe = withSessionExecution(execution, () =>
+    session.onEvent((method) => {
+      if (method !== "Test.late") return
+      try {
+        session.setActiveSession("late-session")
+        callbackError = "late command succeeded"
+      } catch (error) {
+        callbackError = error instanceof Error ? error.message : String(error)
+      }
+    }),
+  )
+
+  execution.active = false
+  emit("Test.late", {})
+  await Bun.sleep(10)
+  unsubscribe()
+
+  expect(callbackError).toBe("browser_execute call already timed out")
+  expect(session.getActiveSession()).not.toBe("late-session")
+})
+
+test("call-result callbacks retain the execution scope that registered them", async () => {
+  const execution = { active: true }
+  let callbackError = "callback did not run"
+  const registered = withSessionExecution(execution, () => ({
+    unsubscribe: session.onCallResult(() => {
+      try {
+        session.setActiveSession("late-result-session")
+        callbackError = "late command succeeded"
+      } catch (error) {
+        callbackError = error instanceof Error ? error.message : String(error)
+      }
+    }),
+    result: session._call("Test.call", {}),
+  }))
+
+  execution.active = false
+  await registered.result
+  registered.unsubscribe()
+
+  expect(callbackError).toBe("browser_execute call already timed out")
+  expect(session.getActiveSession()).not.toBe("late-result-session")
 })
 
 // Retirement guarantee under in-flight connects: an invalidation landing
