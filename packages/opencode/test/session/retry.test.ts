@@ -139,6 +139,30 @@ describe("session.retry.delay", () => {
       expect(Exit.isFailure(third)).toBe(true)
     }),
   )
+
+  it.effect("earlier retries of another reason spend the output-length budget", () =>
+    Effect.gen(function* () {
+      // maxTotalAttempts is measured against one per-request counter, so a
+      // request that already retried twice for rate limits gets no resample.
+      let current: SessionRetry.Err = new SessionV1.APIError({
+        message: "boom",
+        isRetryable: true,
+        responseHeaders: { "retry-after-ms": "0" },
+      }).toObject()
+      const step = yield* Schedule.toStep(
+        SessionRetry.policy({
+          provider: "test",
+          parse: () => current,
+          set: () => Effect.void,
+        }),
+      )
+
+      yield* step(0, current)
+      yield* step(0, current)
+      current = new SessionV1.OutputLengthError({}).toObject()
+      expect(Exit.isFailure(yield* step(0, current).pipe(Effect.exit))).toBe(true)
+    }),
+  )
 })
 
 describe("session.retry.retryable", () => {
