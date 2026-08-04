@@ -12,7 +12,14 @@ The unbounded power of the browser working seamlessly with your code. The agent 
 
 ## Hosted
 
-Want to skip the setup? Use BrowserCode in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_campaign=browsercode-use-in-cloud&utm_source=github).
+Run the agent on [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_campaign=browsercode-use-in-cloud&utm_source=github):
+
+```sh
+curl -X POST https://api.browser-use.com/api/v4/runs \
+  -H "X-Browser-Use-API-Key: $BROWSER_USE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Your task"}'
+```
 
 ## One-Line Install
 
