@@ -105,9 +105,16 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
   if (!body) return
 
   const responseBody = JSON.stringify(body)
-  if (body.type !== "error") return
+  const error =
+    body.type === "error"
+      ? body.error
+      : body.type === "response.failed" &&
+          (body.response?.error?.code === "server_is_overloaded" || body.response?.error?.code === "server_error")
+        ? body.response.error
+        : undefined
+  if (!error) return
 
-  switch (body?.error?.code) {
+  switch (error.code) {
     case "context_length_exceeded":
       return {
         type: "context_overflow",
@@ -131,7 +138,7 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
     case "invalid_prompt":
       return {
         type: "api_error",
-        message: typeof body?.error?.message === "string" ? body?.error?.message : "Invalid prompt.",
+        message: typeof error.message === "string" ? error.message : "Invalid prompt.",
         isRetryable: false,
         responseBody,
       }
@@ -139,7 +146,7 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
     case "server_error":
       return {
         type: "api_error",
-        message: typeof body?.error?.message === "string" ? body?.error?.message : "Server error.",
+        message: typeof error.message === "string" ? error.message : "Server error.",
         isRetryable: true,
         responseBody,
       }
