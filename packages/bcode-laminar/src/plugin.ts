@@ -12,6 +12,7 @@
 // module, not here.
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { SpanStatusCode } from "@opentelemetry/api"
 import { NodeSDK } from "@opentelemetry/sdk-node"
 
 import { createSpanExporter } from "./exporter"
@@ -108,6 +109,27 @@ export const LaminarPlugin: Plugin = ({ client }) => {
     },
     event: async ({ event }) => {
       switch (event.type) {
+        case "session.error": {
+          // The turn span is the only place a failed run can be recorded.
+          // Nothing upstream does it: the AI SDK ends `ai.streamText` and
+          // `ai.streamText.doStream` inside a transform `flush` that never
+          // runs when the consumer aborts, so a provider error arriving
+          // mid-stream drops those spans entirely rather than marking them —
+          // the trace then showed a clean, shorter run. `session.error` is
+          // published just before the session goes idle (processor.ts `halt`),
+          // so the span is still open here; `session.idle` ends it below.
+          const sessionId = event.properties.sessionID
+          const span = sessionId ? sessionCurrentTurnSpan[sessionId] : undefined
+          const error = event.properties.error
+          // An abort is the user stopping the run, not a failure.
+          if (!span || !error || error.name === "MessageAbortedError") break
+          const detail = "message" in error.data ? error.data.message : ""
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: detail ? `${error.name}: ${detail}` : error.name,
+          })
+          break
+        }
         case "session.idle": {
           const sessionId = event.properties.sessionID
           const span = sessionCurrentTurnSpan[sessionId]
