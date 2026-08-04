@@ -2,8 +2,9 @@
 // lmnr-ts/packages/lmnr/src/laminar.ts. We only need to start a "turn" span
 // per chat.message event with sessionId association, optional parent span
 // context (for callers driving opencode programmatically), and an input
-// payload. No tracing-level, masked-input, global-context-stack, or
-// active-span machinery — opencode owns its own trace lifecycle.
+// payload, plus child spans marking points inside a turn. No tracing-level,
+// masked-input, global-context-stack, or active-span machinery — opencode owns
+// its own trace lifecycle.
 
 import { type Context, ROOT_CONTEXT, type Span, trace, TraceFlags } from "@opentelemetry/api"
 
@@ -54,6 +55,26 @@ export const startTurnSpan = (opts: {
   if (opts.input !== undefined) attributes[SPAN_INPUT] = JSON.stringify(opts.input)
 
   return trace.getTracer(TURN_TRACER_NAME).startSpan(opts.name, { attributes }, ctx)
+}
+
+// A span nested under one we already hold, for marking a point inside a turn.
+// No parent-path attributes: the processor derives `lmnr.span.path` from the
+// parent's recorded path, which is present because the parent is still open.
+export const startChildSpan = (opts: {
+  name: string
+  parent: Span
+  sessionId: string
+  input?: unknown
+}): Span => {
+  const attributes: Record<string, any> = {
+    [SPAN_TYPE]: "DEFAULT",
+    [SESSION_ID]: opts.sessionId,
+  }
+  if (opts.input !== undefined) attributes[SPAN_INPUT] = JSON.stringify(opts.input)
+
+  return trace
+    .getTracer(TURN_TRACER_NAME)
+    .startSpan(opts.name, { attributes }, trace.setSpan(ROOT_CONTEXT, opts.parent))
 }
 
 type ParsedSpanContext = {

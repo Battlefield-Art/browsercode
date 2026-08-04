@@ -17,7 +17,7 @@ import { NodeSDK } from "@opentelemetry/sdk-node"
 
 import { createSpanExporter } from "./exporter"
 import { OpenCodeLaminarSpanProcessor } from "./processor"
-import { startTurnSpan } from "./span"
+import { startChildSpan, startTurnSpan } from "./span"
 import { sessionCurrentTurnSpan, subagentSessionIds } from "./state"
 
 const DEFAULT_GRPC_PORT_LMNR = 8443
@@ -179,12 +179,38 @@ export const LaminarPlugin: Plugin = ({ client }) => {
       }
     },
     "chat.message": async (input, output) => {
-      const { sessionID, agent, model, messageID, variant } = input
+      const { sessionID, agent, model, variant } = input
+      // Not `input.messageID`: that is the caller's optional override, absent
+      // whenever the prompt was posted without one (every v4 run — the worker
+      // POSTs /prompt_async with just parts and model), in which case opencode
+      // generates the id. `output.message.id` is the id the message was
+      // actually persisted under either way, so the span can be correlated
+      // with the transcript.
+      const messageID = output.message.id
       // Skip sub-agent prompts — their parent already has a turn span.
       const isSubagent = Object.values(subagentSessionIds).some((children) =>
         children.has(sessionID),
       )
-      if (isSubagent || sessionCurrentTurnSpan[sessionID]) return
+      if (isSubagent) return
+
+      // A user message that arrives while a turn is in flight is absorbed by
+      // the run already in progress: the agent loop re-reads the session's
+      // history at the top of every step, so the message joins the turn
+      // instead of starting one. Record it as a point inside the turn — the
+      // turn span's `input` was serialized when the turn opened and cannot
+      // grow, so without this the injected message leaves no trace at all and
+      // the only evidence is the LLM call's message array silently getting
+      // longer.
+      const open = sessionCurrentTurnSpan[sessionID]
+      if (open) {
+        startChildSpan({
+          name: "injected_input",
+          parent: open,
+          sessionId: sessionID,
+          input: { sessionID, messageID, message: output.message, parts: output.parts },
+        }).end()
+        return
+      }
 
       const span = startTurnSpan({
         name: "turn",
