@@ -179,7 +179,14 @@ export const LaminarPlugin: Plugin = ({ client }) => {
       }
     },
     "chat.message": async (input, output) => {
-      const { sessionID, agent, model, messageID, variant } = input
+      const { sessionID, agent, model, variant } = input
+      // Not `input.messageID`: that is the caller's optional override, absent
+      // whenever the prompt was posted without one (every v4 run — the worker
+      // POSTs /prompt_async with just parts and model), in which case opencode
+      // generates the id. `output.message.id` is the id the message was
+      // actually persisted under either way, so the span can be correlated
+      // with the transcript.
+      const messageID = output.message.id
       // Skip sub-agent prompts — their parent already has a turn span.
       const isSubagent = Object.values(subagentSessionIds).some((children) =>
         children.has(sessionID),
