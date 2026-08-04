@@ -40,6 +40,7 @@ worth chasing.
   - OSS users routing bcode telemetry to any OTel collector (Honeycomb, Tempo, Jaeger) without a Laminar account.
   - V4 cloud relaying spans through a backend that holds the real Laminar ingest key — the agent runtime never needs `LMNR_PROJECT_API_KEY`.
   - Default (neither OTel env var set) is unchanged: gRPC to Laminar.
+- **`injected_input` span for follow-ups that join a running turn.** Upstream returns early from `chat.message` when a turn span is already open, so a user message that arrives mid-run is never recorded: the turn span's `input` is serialized once at creation and cannot grow, leaving the LLM call's message array silently getting longer as the only evidence. `startChildSpan` (in `span.ts`) marks it as a zero-duration child of the live turn, carrying the message parts, positioned between the steps it landed between.
 
 ## Behavior preserved
 

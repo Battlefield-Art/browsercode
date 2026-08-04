@@ -17,7 +17,7 @@ import { NodeSDK } from "@opentelemetry/sdk-node"
 
 import { createSpanExporter } from "./exporter"
 import { OpenCodeLaminarSpanProcessor } from "./processor"
-import { startTurnSpan } from "./span"
+import { startChildSpan, startTurnSpan } from "./span"
 import { sessionCurrentTurnSpan, subagentSessionIds } from "./state"
 
 const DEFAULT_GRPC_PORT_LMNR = 8443
@@ -184,7 +184,26 @@ export const LaminarPlugin: Plugin = ({ client }) => {
       const isSubagent = Object.values(subagentSessionIds).some((children) =>
         children.has(sessionID),
       )
-      if (isSubagent || sessionCurrentTurnSpan[sessionID]) return
+      if (isSubagent) return
+
+      // A user message that arrives while a turn is in flight is absorbed by
+      // the run already in progress: the agent loop re-reads the session's
+      // history at the top of every step, so the message joins the turn
+      // instead of starting one. Record it as a point inside the turn — the
+      // turn span's `input` was serialized when the turn opened and cannot
+      // grow, so without this the injected message leaves no trace at all and
+      // the only evidence is the LLM call's message array silently getting
+      // longer.
+      const open = sessionCurrentTurnSpan[sessionID]
+      if (open) {
+        startChildSpan({
+          name: "injected_input",
+          parent: open,
+          sessionId: sessionID,
+          input: { sessionID, messageID, message: output.message, parts: output.parts },
+        }).end()
+        return
+      }
 
       const span = startTurnSpan({
         name: "turn",
