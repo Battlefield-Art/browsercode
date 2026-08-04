@@ -17,7 +17,7 @@
 //  - `pino` logger — opencode plugins log via `client.app.log`; the plugin passes
 //    in a logger callback.
 
-import { type Context, type Span, trace } from "@opentelemetry/api"
+import { type Context, type Span, SpanStatusCode, trace } from "@opentelemetry/api"
 import {
   BatchSpanProcessor,
   type ReadableSpan,
@@ -39,6 +39,7 @@ import { otelSpanIdToUUID, type StringUUID } from "./utils"
 
 const SDK_VERSION = "bcode-laminar-0.1"
 const SPAWNING_TOOL_NAMES = ["task"]
+const TOOL_ERROR = "bcode.tool.error"
 type LogFn = (level: "debug" | "info" | "warn" | "error", message: string) => void
 
 export class OpenCodeLaminarSpanProcessor implements SpanProcessor {
@@ -153,6 +154,21 @@ export class OpenCodeLaminarSpanProcessor implements SpanProcessor {
   }
 
   onEnd(span: ReadableSpan): void {
+    // A tool that throws is normal agent flow, not a failed run: the model
+    // reads the `tool-error` result and adapts. The AI SDK still stamps ERROR
+    // on the `ai.toolCall` span (`recordErrorOnSpan`), and Laminar reds a
+    // whole trace if ANY of its spans is ERROR — so every run where the model
+    // wrote one buggy `browser_execute` snippet was reported as a failure.
+    // Demote to UNSET, keeping the message as an attribute and the recorded
+    // `exception` event untouched. Only the `turn` span decides run outcome.
+    //
+    // Mutated in place because `setStatus`/`setAttribute` are no-ops once the
+    // span has ended, which it has by the time onEnd runs.
+    if (span.attributes["ai.toolCall.id"] && span.status.code === SpanStatusCode.ERROR) {
+      Object.assign(span.attributes, { [TOOL_ERROR]: span.status.message ?? "" })
+      Object.assign(span, { status: { code: SpanStatusCode.UNSET } })
+    }
+
     const spanId = span.spanContext().spanId
     this.spanIdLists.delete(spanId)
     this.spanIdToPath.delete(spanId)
