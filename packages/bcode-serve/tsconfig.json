@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@tsconfig/bun/tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": [],
+    "noUncheckedIndexedAccess": false,
+    "customConditions": ["browser"],
+    // `packages/opencode` sources reach each other through `@/*`. We import a
+    // handful of them directly, so tsc needs the same mapping the bundler gets
+    // from `packages/opencode/tsconfig.json`.
+    "paths": {
+      "@/*": ["../opencode/src/*"]
+    }
+  },
+  // `packages/opencode/src/*.d.ts` carries ambient module declarations (`*.wasm`,
+  // `*.sql`, `*.md`) that its sources rely on. They're picked up automatically
+  // inside that package; pulling them in explicitly keeps typecheck honest here.
+  "include": ["src/**/*", "script/**/*", "../opencode/src/*.d.ts"]
+}

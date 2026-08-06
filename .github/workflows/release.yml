@@ -146,6 +146,34 @@ jobs:
         run: |
           ./packages/opencode/script/build.ts
 
+      - name: Build serve-only variant and upload to release
+        # Additive: produces `bcode-linux-{arm64,x64}-serve.tar.gz` alongside the
+        # standard assets, for the headless V4 container (ENG-5671). It registers
+        # only `bcode serve`, drops the embedded web UI, and is bytecode-compiled
+        # — roughly -36% spawn-to-listening versus the standard binary.
+        #
+        # Built from its own package (`packages/bcode-serve`) so that
+        # `packages/opencode` — forked from upstream and synced regularly —
+        # stays untouched. The canonical build step above is unmodified.
+        #
+        # Runs AFTER the canonical build and is `continue-on-error` on purpose:
+        # this variant must never be able to block or alter a normal release. It
+        # writes different asset names, so `--clobber` cannot overwrite the
+        # standard archives.
+        #
+        # Linux only — the only consumer is the container image. Add targets here
+        # if that changes.
+        continue-on-error: true
+        env:
+          OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
+          OPENCODE_RELEASE: "1"
+          OPENCODE_CHANNEL: latest
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BCODE_DEFAULT_LMNR_KEY: ${{ secrets.LMNR_PROJECT_API_KEY_OSS }}
+        run: |
+          ./packages/bcode-serve/script/build.ts --targets linux-arm64,linux-x64
+
       - name: Summarise uploaded assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

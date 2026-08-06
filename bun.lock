@@ -123,6 +123,22 @@
         "@types/bun": "catalog:",
       },
     },
+    "packages/bcode-serve": {
+      "name": "@browser-use/bcode-serve",
+      "version": "0.0.0",
+      "dependencies": {
+        "@browser-use/bcode-browser": "workspace:*",
+        "@browser-use/browsercode-core": "workspace:*",
+        "@opencode-ai/core": "workspace:*",
+        "@opencode-ai/script": "workspace:*",
+        "yargs": "18.0.0",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "@types/yargs": "17.0.33",
+      },
+    },
     "packages/cli": {
       "name": "@opencode-ai/cli",
       "version": "1.18.4",
@@ -1482,6 +1498,8 @@
     "@browser-use/bcode-browser": ["@browser-use/bcode-browser@workspace:packages/bcode-browser"],
 
     "@browser-use/bcode-laminar": ["@browser-use/bcode-laminar@workspace:packages/bcode-laminar"],
+
+    "@browser-use/bcode-serve": ["@browser-use/bcode-serve@workspace:packages/bcode-serve"],
 
     "@browser-use/browsercode-core": ["@browser-use/browsercode-core@workspace:packages/opencode"],
 
