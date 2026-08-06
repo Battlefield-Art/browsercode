@@ -1,23 +1,22 @@
 #!/usr/bin/env bun
 //
-// Builds the `bcode-<target>-serve` binary variant (ENG-5671).
+// Builds the `bcode-<target>-serve` binary variant.
 //
-// Deliberately separate from `packages/opencode/script/build.ts`: that package
-// is forked from upstream and synced regularly, so it stays byte-for-byte
-// untouched. This script produces an *additional* release asset and never
-// writes to the standard one — different dist dir, different asset name.
+// Separate from `packages/opencode/script/build.ts` so that package, forked
+// from upstream and synced regularly, stays untouched. Produces an additional
+// release asset and never writes to the standard one — different dist dir,
+// different asset name.
 //
 // Differences from the standard build:
-//   - entrypoint is this package's serve-only `src/index.ts` (1 command, not 24)
-//   - no embedded web UI (headless; `embeddedUI()` already handles its absence)
+//   - serve-only entrypoint (1 command, not 24)
+//   - no embedded web UI (headless; `embeddedUI()` handles its absence)
 //   - no TUI worker entrypoint (reachable only from `cli/cmd/tui.ts`)
-//   - `bytecode: true` — skips JS parse at boot, ~-33% spawn-to-listening
+//   - bytecode compilation
 //   - linux only by default; the only consumer is the container image
 //
-// The Bun.build config below mirrors the standard build's. It has to be kept in
-// sync by hand — the alternative is editing the upstream file, which is what
-// this package exists to avoid. The smoke test boots `serve` for real, so a
-// missing `define` or a broken graph fails here rather than in production.
+// The Bun.build config below mirrors the standard build's and has to be kept in
+// sync by hand. The smoke test boots `serve` for real, so a missing `define` or
+// a broken graph fails here rather than in production.
 //
 // Usage:
 //   bun run script/build.ts                          # host target, no upload
@@ -32,7 +31,7 @@ const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const opencodeDir = path.resolve(dir, "../opencode")
 
 // `generate.ts` chdirs into packages/opencode as an import side effect; restore
-// ours afterwards so the skills bundle's relative specifiers resolve correctly.
+// ours so the skills bundle's relative specifiers resolve.
 const generated = await import(path.join(opencodeDir, "script/generate.ts"))
 process.chdir(dir)
 
@@ -43,8 +42,8 @@ import opencodePkg from "../../opencode/package.json"
 const skipInstall = process.argv.includes("--skip-install")
 const noBytecodeFlag = process.argv.includes("--no-bytecode")
 
-// Target allowlist, matched against `<os>-<arch>[-baseline][-musl]`. Defaults to
-// the host target so a local `bun run build` is quick; release CI passes linux.
+// Target allowlist, matched against `<os>-<arch>[-baseline][-musl]`. Defaults
+// to the host target; release CI passes linux.
 const targetsArg = process.argv.includes("--targets")
   ? process.argv[process.argv.indexOf("--targets") + 1]
   : process.env.BCODE_SERVE_TARGETS
@@ -141,15 +140,13 @@ for (const item of targets) {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
-      // TUI-only, but referenced behind a `typeof` guard in opencode sources —
-      // define it so a stray reference cannot throw ReferenceError.
+      // TUI-only; defined so a stray reference cannot throw ReferenceError.
       OTUI_TREE_SITTER_WORKER_PATH: `''`,
       OPENCODE_WORKER_PATH: `''`,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
-      // Build-time-embedded Laminar project key. Populated by release CI from
-      // the LMNR_PROJECT_API_KEY_OSS secret; empty for local builds. Runtime use
-      // is gated in @browser-use/bcode-browser/src/telemetry.ts.
+      // Populated by release CI from LMNR_PROJECT_API_KEY_OSS; empty locally.
+      // Runtime use is gated in @browser-use/bcode-browser/src/telemetry.ts.
       BCODE_DEFAULT_LMNR_KEY: JSON.stringify(process.env.BCODE_DEFAULT_LMNR_KEY ?? ""),
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
     },
@@ -159,9 +156,8 @@ for (const item of targets) {
     process.exit(1)
   }
 
-  // Smoke test: boot the server for real, not just `--version`. A missing
-  // `define` or a module dropped from the graph shows up as a failure to reach
-  // the listening banner, which `--version` would sail straight past.
+  // Boot the server for real, not just `--version`: a missing `define` or a
+  // module dropped from the graph would sail straight past `--version`.
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
     const binaryPath = path.join(dir, outdir, "bin/bcode")
     console.log(`Smoke test: ${assetName} serve`)

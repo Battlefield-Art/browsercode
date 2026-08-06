@@ -1,36 +1,21 @@
-// Serve-only entrypoint for the `bcode-<target>-serve` binary variant (ENG-5671).
+// Serve-only entrypoint for the `bcode-<target>-serve` binary variant.
 //
-// `packages/opencode/src/index.ts` eagerly imports all 24 command modules before
-// yargs parses. The headless V4 runtime only ever invokes `bcode serve`, so the
-// other 23 — TUI, run, web, github, pr, stats, import/export, db — are dead
-// weight in its binary. They cost little at boot (the serve module graph already
-// pulls the expensive shared core), but they cost real bytes, and bytes decide
-// whether bytecode compilation is affordable:
+// `packages/opencode/src/index.ts` eagerly imports all 24 command modules.
+// Headless containers only ever invoke `bcode serve`, so registering just that
+// one keeps the other 23 out of the bundle — which is what makes bytecode
+// compilation affordable for this variant.
 //
-//   entrypoint         plain              bytecode
-//   opencode index.ts  108 MB / 412 ms    310 MB / 266 ms
-//   this file           92 MB / 381 ms    229 MB / 257 ms
+// Lives here rather than in `packages/opencode` so that tree, forked from
+// upstream and synced regularly, stays untouched.
 //
-// (darwin-arm64, no embedded web UI, spawn-to-listening-banner, medians of 7.)
-// Excluding the unused commands saves 16 MB without bytecode but 81 MB with it —
-// dead code is ~5x more expensive once every function also carries compiled
-// bytecode.
-//
-// This package exists so none of that touches `packages/opencode`, which is
-// forked from upstream and synced regularly. Everything here is additive: a new
-// package, a new release asset, and an opt-in installer flag. The standard
-// binary is built and published exactly as before.
-//
-// DRIFT WARNING: the global-option and lifecycle wiring below is duplicated from
-// `packages/opencode/src/index.ts`, which stays the source of truth. Global
-// options added there must be mirrored here. The build script's smoke test boots
-// `serve` for real (not just `--version`) so that a missing build-time `define`
-// or a broken module graph fails the build rather than the deployment.
+// DRIFT WARNING: the global-option and lifecycle wiring below is duplicated
+// from `packages/opencode/src/index.ts`, which stays the source of truth.
+// Options added there must be mirrored here. The build's smoke test boots
+// `serve` for real, so a missing `define` fails the build, not the deploy.
 
-// Telemetry key injection runs as an import side effect of this module, before
-// any subsequent import is evaluated. Keep this as the FIRST import so the
-// LMNR_PROJECT_API_KEY env var is settled before any downstream module-load code
-// reads it. (Same ordering contract as packages/opencode/src/index.ts.)
+// Must stay the FIRST import: this module sets LMNR_PROJECT_API_KEY as an
+// import side effect, before any downstream module-load code reads it. Same
+// ordering contract as packages/opencode/src/index.ts.
 import "@browser-use/bcode-browser/telemetry"
 
 import yargs from "yargs"
@@ -124,10 +109,8 @@ try {
   }
   process.exitCode = 1
 } finally {
-  // Plugin shutdown hooks are the single drain point for OTel-based plugins
-  // (e.g. bcode-laminar) — without this the V4 worker loses trailing spans.
-  // Mirrors the drain in packages/opencode/src/index.ts; see the note there for
-  // why the host-side forceFlush fallback was dropped.
+  // Single drain point for OTel-based plugins (e.g. bcode-laminar); without it
+  // trailing spans are lost. Mirrors the drain in packages/opencode/src/index.ts.
   try {
     const { pluginShutdownHooks } = await import("@browser-use/browsercode-core/plugin/index")
     await Promise.race([

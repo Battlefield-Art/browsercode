@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/package.json",
   "version": "0.0.0",
   "name": "@browser-use/bcode-serve",
-  "description": "Serve-only bcode binary variant for headless containers (ENG-5671)",
+  "description": "Serve-only bcode binary variant for headless containers",
   "type": "module",
   "license": "MIT",
   "private": true,

@@ -2,36 +2,23 @@
 #
 # BrowserCode installer — bytecode / serve-only build.
 #
-# Intended to be hosted at https://bcode.sh/bytecode, alongside (not replacing)
-# https://bcode.sh/install. One-liner:
+# Hosted at https://bcode.sh/bytecode, alongside (not replacing)
+# https://bcode.sh/install:
 #
-#   curl -fsSL https://bcode.sh/bytecode | bash
 #   curl -fsSL https://bcode.sh/bytecode | bash -s -- --no-modify-path --version 0.0.3
 #
-# WHAT THIS INSTALLS, AND HOW IT DIFFERS
+# Installs the `bcode-linux-<arch>-serve` asset, which provides ONLY
+# `bcode serve` — `run`, `tui`, `web`, `github` and the rest are absent and
+# exit 1. It exists for headless containers; anyone installing bcode on a
+# laptop wants https://bcode.sh/install.
 #
-# The `bcode-linux-<arch>-serve` release asset. It is bytecode-compiled and
-# built from a serve-only entrypoint, which makes it roughly 35% faster from
-# spawn to listening — but it provides ONLY `bcode serve`. `run`, `tui`, `web`,
-# `github`, `auth`, and every other subcommand are absent and exit 1.
+# `install.sh` is the published path docs point at and stays untouched. This is
+# additive: a second script, a second URL, a second release asset.
 #
-# That is the whole point: it exists for headless containers that shell out to
-# `bcode serve` and nothing else. If you are a human installing bcode on a
-# laptop, you want https://bcode.sh/install instead.
-#
-# Linux only — the only consumer is the container image, so the release workflow
-# only builds linux targets for this variant.
-#
-# WHY A SEPARATE SCRIPT
-#
-# `install.sh` is the published, documented path that people and docs point at.
-# It stays untouched. This is additive: a second script, a second URL, a second
-# release asset. Nothing here can change what `bcode.sh/install` serves.
-#
-# Deliberately much shorter than install.sh: no baseline/AVX2 detection (the
-# variant ships one build per arch), no shell-rc editing (containers set PATH in
-# the Dockerfile), no uv hint. Accepts install.sh's flags so switching is a
-# one-word change to the URL in a Dockerfile.
+# Linux only. Deliberately much shorter than install.sh: one build per arch (no
+# baseline/AVX2 detection), no shell-rc editing (containers set PATH in the
+# Dockerfile), no uv hint. Takes install.sh's flags so switching is a one-word
+# change to the URL in a Dockerfile.
 set -euo pipefail
 
 APP=bcode
@@ -94,7 +81,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-modify-path)
             # No-op: this script never touches shell config. Accepted so an
-            # existing `install.sh` invocation works verbatim against this URL.
+            # existing install.sh invocation works verbatim against this URL.
             shift
             ;;
         *)
@@ -153,9 +140,8 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/bcode_bytecode_install.XXXXXX")
 cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT
 
-# Fail loudly on a missing asset rather than unpacking a 404 body. The variant
-# is only published from the release after this script landed, so an older tag
-# legitimately won't have it — say so instead of erroring out of tar.
+# Fail loudly rather than unpacking a 404 body. Releases predating this variant
+# legitimately lack the asset, so say that instead of erroring out of tar.
 if ! curl -fsSL -o "${tmp_dir}/${filename}" "$url"; then
     echo -e "${RED}Error: could not download ${filename} for v${specific_version}.${NC}" >&2
     echo -e "${MUTED}URL: ${url}${NC}" >&2
@@ -175,8 +161,8 @@ mkdir -p "$install_dir"
 mv "${tmp_dir}/${APP}" "${install_dir}/${APP}"
 chmod 755 "${install_dir}/${APP}"
 
-# Sanity check: a binary that cannot report its own version is not worth leaving
-# on disk for the container to discover at runtime.
+# A binary that cannot report its own version is not worth leaving on disk for
+# the container to discover at runtime.
 if ! installed_version=$("${install_dir}/${APP}" --version 2>/dev/null); then
     echo -e "${RED}Error: installed binary failed to run.${NC}" >&2
     exit 1
