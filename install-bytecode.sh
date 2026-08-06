@@ -158,7 +158,12 @@ fi
 echo -e "${MUTED}Installing ${NC}${APP} ${MUTED}(${VARIANT} build) version: ${NC}${specific_version}"
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/bcode_bytecode_install.XXXXXX")
-cleanup() { rm -rf "$tmp_dir"; }
+staged=""
+cleanup() {
+    rm -rf "$tmp_dir"
+    [ -n "${staged:-}" ] && rm -f "$staged"
+    return 0
+}
 trap cleanup EXIT
 
 # Fail loudly rather than unpacking a 404 body. Releases predating this variant
@@ -178,17 +183,27 @@ if [ ! -f "${tmp_dir}/${APP}" ]; then
     exit 1
 fi
 
-# Validate before installing, not after: a corrupt or wrong-libc download that
-# fails here must not have already overwritten a working bcode.
-chmod 755 "${tmp_dir}/${APP}"
-if ! installed_version=$("${tmp_dir}/${APP}" --version 2>/dev/null); then
+# Stage inside the install dir, validate, then swap into place.
+#
+# Validating before the swap keeps a corrupt or wrong-libc download from
+# replacing a working bcode. Staging in the install dir rather than the temp dir
+# keeps that safety without requiring an exec-capable /tmp — `noexec` there is
+# common hardening, and the install dir has to allow exec regardless. It also
+# makes the final step a same-filesystem `mv`, so the swap is atomic and no
+# reader can observe a half-written binary.
+mkdir -p "$install_dir"
+staged=$(mktemp "${install_dir}/.${APP}.XXXXXX")
+mv "${tmp_dir}/${APP}" "$staged"
+chmod 755 "$staged"
+
+if ! installed_version=$("$staged" --version 2>/dev/null); then
     echo -e "${RED}Error: downloaded binary failed to run; leaving any existing install untouched.${NC}" >&2
+    echo -e "${MUTED}If ${install_dir} is mounted noexec, install elsewhere with --install-dir.${NC}" >&2
     exit 1
 fi
 
-mkdir -p "$install_dir"
-mv "${tmp_dir}/${APP}" "${install_dir}/${APP}"
-chmod 755 "${install_dir}/${APP}"
+mv "$staged" "${install_dir}/${APP}"
+staged=""
 
 echo -e "${MUTED}Installed ${NC}${install_dir}/${APP}${MUTED} (${installed_version})${NC}"
 echo -e "${MUTED}This build provides '${APP} serve' only.${NC}"
