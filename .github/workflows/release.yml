@@ -169,8 +169,23 @@ jobs:
           OPENCODE_CHANNEL: latest
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
           BCODE_DEFAULT_LMNR_KEY: ${{ secrets.LMNR_PROJECT_API_KEY_OSS }}
         run: |
+          # Checkout has no `ref:`, so on `workflow_dispatch` the tree is the
+          # dispatch ref (usually main), not the selected tag — while the upload
+          # still targets that tag. Publishing then would put main's code inside
+          # the tag's assets. Build only when the tree really is the tag.
+          #
+          # The canonical build step above has the same exposure; fixing that
+          # means changing `Checkout` for the whole job, which is out of scope
+          # here. Tracked separately.
+          TAG_SHA=$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" || true)
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$TAG_SHA" ]; then
+            echo "::warning::Skipped the serve variant: checkout $(git rev-parse --short HEAD) is not tag ${TAG}. Re-run from a state where they match to publish it."
+            exit 0
+          fi
           bun ./packages/bcode-serve/script/build.ts \
             --targets linux-arm64,linux-x64,linux-arm64-musl,linux-x64-musl
 
