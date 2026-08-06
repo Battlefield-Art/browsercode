@@ -63,11 +63,9 @@ Use `/connect` in the TUI, or set provider API keys in your environment.
 
 Recommended models from current BU Bench evals:
 
-- Best score: `claude-opus-4-7`
-- Best speed: `gpt-5.5`
-- Best open-weight: `glm-5.2`
-- Best value: `gemini-3.1-pro-preview`
-- Lowest cost: `minimax-m3`
+- Best performance: `claude-opus-4-8`
+- Best open-weight: `kimi-k3`
+- Best value: `gpt-5.6-luna` at `xhigh` reasoning effort
 
 ### Connect a Browser
 
