@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+#
+# BrowserCode installer — bytecode / serve-only build.
+#
+# Intended to be hosted at https://bcode.sh/bytecode, alongside (not replacing)
+# https://bcode.sh/install. One-liner:
+#
+#   curl -fsSL https://bcode.sh/bytecode | bash
+#   curl -fsSL https://bcode.sh/bytecode | bash -s -- --no-modify-path --version 0.0.3
+#
+# WHAT THIS INSTALLS, AND HOW IT DIFFERS
+#
+# The `bcode-linux-<arch>-serve` release asset. It is bytecode-compiled and
+# built from a serve-only entrypoint, which makes it roughly 35% faster from
+# spawn to listening — but it provides ONLY `bcode serve`. `run`, `tui`, `web`,
+# `github`, `auth`, and every other subcommand are absent and exit 1.
+#
+# That is the whole point: it exists for headless containers that shell out to
+# `bcode serve` and nothing else. If you are a human installing bcode on a
+# laptop, you want https://bcode.sh/install instead.
+#
+# Linux only — the only consumer is the container image, so the release workflow
+# only builds linux targets for this variant.
+#
+# WHY A SEPARATE SCRIPT
+#
+# `install.sh` is the published, documented path that people and docs point at.
+# It stays untouched. This is additive: a second script, a second URL, a second
+# release asset. Nothing here can change what `bcode.sh/install` serves.
+#
+# Deliberately much shorter than install.sh: no baseline/AVX2 detection (the
+# variant ships one build per arch), no shell-rc editing (containers set PATH in
+# the Dockerfile), no uv hint. Accepts install.sh's flags so switching is a
+# one-word change to the URL in a Dockerfile.
+set -euo pipefail
+
+APP=bcode
+VARIANT=serve
+REPO=browser-use/browsercode
+
+MUTED='\033[0;2m'
+RED='\033[0;31m'
+ORANGE='\033[38;5;214m'
+NC='\033[0m'
+
+usage() {
+    cat <<EOF
+BrowserCode Installer (bytecode / serve-only build)
+
+Usage: install-bytecode.sh [options]
+
+Installs a bcode binary that provides ONLY 'bcode serve'. For the full CLI use
+https://bcode.sh/install instead.
+
+Options:
+    -h, --help              Display this help message
+    -v, --version <version> Install a specific version (e.g. 0.0.3)
+        --install-dir <dir> Install to <dir> (default: \$HOME/.bcode/bin)
+        --no-modify-path    Accepted for parity with install.sh; this script
+                            never edits shell config files.
+
+Examples:
+    curl -fsSL https://bcode.sh/bytecode | bash
+    curl -fsSL https://bcode.sh/bytecode | bash -s -- --no-modify-path --version 0.0.3
+EOF
+}
+
+requested_version=${VERSION:-}
+install_dir=${BCODE_INSTALL_DIR:-$HOME/.bcode/bin}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -v|--version)
+            if [[ -n "${2:-}" ]]; then
+                requested_version="$2"
+                shift 2
+            else
+                echo -e "${RED}Error: --version requires a version argument${NC}" >&2
+                exit 1
+            fi
+            ;;
+        --install-dir)
+            if [[ -n "${2:-}" ]]; then
+                install_dir="$2"
+                shift 2
+            else
+                echo -e "${RED}Error: --install-dir requires a path argument${NC}" >&2
+                exit 1
+            fi
+            ;;
+        --no-modify-path)
+            # No-op: this script never touches shell config. Accepted so an
+            # existing `install.sh` invocation works verbatim against this URL.
+            shift
+            ;;
+        *)
+            echo -e "${ORANGE}Warning: Unknown option '$1'${NC}" >&2
+            shift
+            ;;
+    esac
+done
+
+raw_os=$(uname -s)
+case "$raw_os" in
+  Linux*) os="linux" ;;
+  *)
+    echo -e "${RED}Error: the ${VARIANT} build is published for linux only (detected: ${raw_os}).${NC}" >&2
+    echo -e "${MUTED}Use https://bcode.sh/install for the standard cross-platform binary.${NC}" >&2
+    exit 1
+    ;;
+esac
+
+arch=$(uname -m)
+case "$arch" in
+  aarch64|arm64) arch="arm64" ;;
+  x86_64|amd64)  arch="x64" ;;
+  *)
+    echo -e "${RED}Error: unsupported architecture '${arch}'. Supported: arm64, x64.${NC}" >&2
+    exit 1
+    ;;
+esac
+
+for tool in curl tar; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo -e "${RED}Error: '${tool}' is required but not installed.${NC}" >&2
+        exit 1
+    fi
+done
+
+filename="${APP}-${os}-${arch}-${VARIANT}.tar.gz"
+
+if [ -z "$requested_version" ]; then
+    url="https://github.com/${REPO}/releases/latest/download/${filename}"
+    specific_version=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+        | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' || true)
+    if [ -z "$specific_version" ]; then
+        echo -e "${RED}Failed to resolve the latest version.${NC}" >&2
+        echo -e "${MUTED}If the repo is private, pin a version: --version <ver>${NC}" >&2
+        exit 1
+    fi
+else
+    specific_version="${requested_version#v}"
+    url="https://github.com/${REPO}/releases/download/v${specific_version}/${filename}"
+fi
+
+echo -e "${MUTED}Installing ${NC}${APP} ${MUTED}(${VARIANT} build) version: ${NC}${specific_version}"
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/bcode_bytecode_install.XXXXXX")
+cleanup() { rm -rf "$tmp_dir"; }
+trap cleanup EXIT
+
+# Fail loudly on a missing asset rather than unpacking a 404 body. The variant
+# is only published from the release after this script landed, so an older tag
+# legitimately won't have it — say so instead of erroring out of tar.
+if ! curl -fsSL -o "${tmp_dir}/${filename}" "$url"; then
+    echo -e "${RED}Error: could not download ${filename} for v${specific_version}.${NC}" >&2
+    echo -e "${MUTED}URL: ${url}${NC}" >&2
+    echo -e "${MUTED}Releases predating the ${VARIANT} variant do not publish this asset.${NC}" >&2
+    echo -e "${MUTED}Check https://github.com/${REPO}/releases for one that does, or use https://bcode.sh/install.${NC}" >&2
+    exit 1
+fi
+
+tar -xzf "${tmp_dir}/${filename}" -C "$tmp_dir"
+
+if [ ! -f "${tmp_dir}/${APP}" ]; then
+    echo -e "${RED}Error: archive did not contain a '${APP}' binary.${NC}" >&2
+    exit 1
+fi
+
+mkdir -p "$install_dir"
+mv "${tmp_dir}/${APP}" "${install_dir}/${APP}"
+chmod 755 "${install_dir}/${APP}"
+
+# Sanity check: a binary that cannot report its own version is not worth leaving
+# on disk for the container to discover at runtime.
+if ! installed_version=$("${install_dir}/${APP}" --version 2>/dev/null); then
+    echo -e "${RED}Error: installed binary failed to run.${NC}" >&2
+    exit 1
+fi
+
+echo -e "${MUTED}Installed ${NC}${install_dir}/${APP}${MUTED} (${installed_version})${NC}"
+echo -e "${MUTED}This build provides '${APP} serve' only.${NC}"

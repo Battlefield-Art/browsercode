@@ -34,16 +34,11 @@ Options:
     -h, --help              Display this help message
     -v, --version <version> Install a specific version (e.g. 0.0.3)
     -b, --binary <path>     Install from a local binary instead of downloading
-        --variant <name>    Install a build variant instead of the standard binary.
-                            Currently: 'serve' — a headless, serve-only build for
-                            containers. It provides ONLY 'bcode serve'; every other
-                            subcommand is absent. Linux only.
         --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
 
 Examples:
     curl -fsSL https://bcode.sh/install | bash
     curl -fsSL https://bcode.sh/install | bash -s -- --version 0.0.3
-    curl -fsSL https://bcode.sh/install | bash -s -- --version 0.0.3 --variant serve
     ./install.sh --binary /path/to/bcode
 EOF
 }
@@ -51,7 +46,6 @@ EOF
 requested_version=${VERSION:-}
 no_modify_path=false
 binary_path=""
-variant=${BCODE_VARIANT:-}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -74,15 +68,6 @@ while [[ $# -gt 0 ]]; do
                 shift 2
             else
                 echo -e "${RED}Error: --binary requires a path argument${NC}"
-                exit 1
-            fi
-            ;;
-        --variant)
-            if [[ -n "${2:-}" ]]; then
-                variant="$2"
-                shift 2
-            else
-                echo -e "${RED}Error: --variant requires a name argument${NC}"
                 exit 1
             fi
             ;;
@@ -195,15 +180,6 @@ else
     if [ "$is_musl" = "true" ]; then
       target="$target-musl"
     fi
-    # Variant marker goes last, matching the asset naming in
-    # packages/bcode-serve/script/build.ts (`<os>-<arch>[-baseline][-musl][-serve]`).
-    if [ -n "$variant" ]; then
-      if [ "$os" != "linux" ]; then
-        echo -e "${RED}Error: --variant ${variant} is only published for linux (detected: ${os})${NC}"
-        exit 1
-      fi
-      target="$target-$variant"
-    fi
 
     filename="$APP-$target$archive_ext"
 
@@ -257,12 +233,6 @@ print_message() {
 }
 
 check_version() {
-    # A variant swap keeps the same version string, so the "already installed"
-    # short-circuit would skip a standard -> serve switch. Always reinstall when
-    # a variant is requested.
-    if [ -n "$variant" ]; then
-        return
-    fi
     if command -v bcode >/dev/null 2>&1; then
         installed_version=$(bcode --version 2>/dev/null || echo "")
 
