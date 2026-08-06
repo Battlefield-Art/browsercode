@@ -179,10 +179,16 @@ for (const item of targets) {
       const stderr = await new Response(proc.stderr).text()
       throw new Error(`server exited before listening.\nstdout:\n${buffered}\nstderr:\n${stderr}`)
     })()
+    // Timer handle is cleared in `finally`: an armed timer keeps the event loop
+    // alive, which would stall the build for the full timeout after every
+    // successful smoke test.
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const banner = await Promise.race([
         listening,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out after 30s")), 30_000)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("timed out after 30s")), 30_000)
+        }),
       ])
       console.log(`Smoke test passed: ${banner.trim().split("\n").at(-1)}`)
     } catch (e) {
@@ -190,6 +196,7 @@ for (const item of targets) {
       proc.kill()
       process.exit(1)
     } finally {
+      clearTimeout(timer)
       proc.kill()
       await proc.exited
     }

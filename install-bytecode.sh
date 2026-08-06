@@ -118,7 +118,28 @@ for tool in curl tar; do
     fi
 done
 
-filename="${APP}-${os}-${arch}-${VARIANT}.tar.gz"
+# A glibc binary will not start on musl, so pick the matching build rather than
+# installing something that dies at exec.
+is_musl=false
+if [ -f /etc/alpine-release ]; then
+    is_musl=true
+elif command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+    is_musl=true
+fi
+
+# Non-baseline x64 builds require AVX2. This variant publishes no baseline
+# asset, so say that rather than installing a binary that SIGILLs on first run.
+# (Adding it is one entry in packages/bcode-serve/script/build.ts if ever needed.)
+# Only trip when /proc/cpuinfo is actually readable — unknown is not "absent".
+if [ "$arch" = "x64" ] && [ -r /proc/cpuinfo ] && ! grep -qwi avx2 /proc/cpuinfo; then
+    echo -e "${RED}Error: this CPU lacks AVX2, and no baseline ${VARIANT} build is published.${NC}" >&2
+    echo -e "${MUTED}Use https://bcode.sh/install, which ships a baseline binary.${NC}" >&2
+    exit 1
+fi
+
+target="${os}-${arch}"
+[ "$is_musl" = true ] && target="${target}-musl"
+filename="${APP}-${target}-${VARIANT}.tar.gz"
 
 if [ -z "$requested_version" ]; then
     url="https://github.com/${REPO}/releases/latest/download/${filename}"
@@ -157,16 +178,17 @@ if [ ! -f "${tmp_dir}/${APP}" ]; then
     exit 1
 fi
 
+# Validate before installing, not after: a corrupt or wrong-libc download that
+# fails here must not have already overwritten a working bcode.
+chmod 755 "${tmp_dir}/${APP}"
+if ! installed_version=$("${tmp_dir}/${APP}" --version 2>/dev/null); then
+    echo -e "${RED}Error: downloaded binary failed to run; leaving any existing install untouched.${NC}" >&2
+    exit 1
+fi
+
 mkdir -p "$install_dir"
 mv "${tmp_dir}/${APP}" "${install_dir}/${APP}"
 chmod 755 "${install_dir}/${APP}"
-
-# A binary that cannot report its own version is not worth leaving on disk for
-# the container to discover at runtime.
-if ! installed_version=$("${install_dir}/${APP}" --version 2>/dev/null); then
-    echo -e "${RED}Error: installed binary failed to run.${NC}" >&2
-    exit 1
-fi
 
 echo -e "${MUTED}Installed ${NC}${install_dir}/${APP}${MUTED} (${installed_version})${NC}"
 echo -e "${MUTED}This build provides '${APP} serve' only.${NC}"

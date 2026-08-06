@@ -156,7 +156,12 @@ jobs:
         # must never block or alter a normal release. Different asset names, so
         # `--clobber` cannot overwrite the standard archives.
         #
-        # Linux only — the only consumer is the container image.
+        # Linux only — the only consumer is the container image. glibc + musl,
+        # matching what install-bytecode.sh can select; no baseline (non-AVX2
+        # x64), which the installer rejects with a pointer to /install.
+        #
+        # Invoked through `bun` rather than as `./...` so a lost executable bit
+        # cannot silently disable the whole step under continue-on-error.
         continue-on-error: true
         env:
           OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
@@ -166,7 +171,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BCODE_DEFAULT_LMNR_KEY: ${{ secrets.LMNR_PROJECT_API_KEY_OSS }}
         run: |
-          ./packages/bcode-serve/script/build.ts --targets linux-arm64,linux-x64
+          bun ./packages/bcode-serve/script/build.ts \
+            --targets linux-arm64,linux-x64,linux-arm64-musl,linux-x64-musl
 
       - name: Summarise uploaded assets
         env:
