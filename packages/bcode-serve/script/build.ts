@@ -1,211 +1,174 @@
 #!/usr/bin/env bun
 //
-// Builds the `bcode-<target>-serve` binary variant.
+// Builds the `bcode-<target>-serve` binary variant: registers only `bcode serve`
+// and is bytecode-compiled, for headless containers.
 //
-// Separate from `packages/opencode/script/build.ts` so that package, forked
-// from upstream and synced regularly, stays untouched. Produces an additional
-// release asset and never writes to the standard one — different dist dir,
-// different asset name.
+// Separate from packages/opencode/script/build.ts so that package — forked from
+// upstream and synced regularly — stays untouched. Produces additional release
+// assets; never writes the standard ones.
 //
-// Differences from the standard build:
-//   - serve-only entrypoint (1 command, not 24)
-//   - no embedded web UI (headless; `embeddedUI()` handles its absence)
-//   - no TUI worker entrypoint (reachable only from `cli/cmd/tui.ts`)
-//   - bytecode compilation
-//   - linux only by default; the only consumer is the container image
-//
-// The Bun.build config below mirrors the standard build's and has to be kept in
-// sync by hand. The smoke test boots `serve` for real, so a missing `define` or
-// a broken graph fails here rather than in production.
-//
-// Usage:
-//   bun run script/build.ts                          # host target, no upload
-//   bun run script/build.ts --targets linux-arm64     # cross-compile
-//   OPENCODE_RELEASE=1 bun run script/build.ts ...    # archive + gh upload
+//   bun run script/build.ts                                  # host target
+//   bun run script/build.ts --targets linux-arm64,linux-x64  # cross-compile
+//   OPENCODE_RELEASE=1 bun run script/build.ts --targets ...  # archive + upload
 
 import { $ } from "bun"
 import path from "path"
 import { fileURLToPath } from "url"
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const opencodeDir = path.resolve(dir, "../opencode")
+const opencode = path.resolve(dir, "../opencode")
 
-// `generate.ts` chdirs into packages/opencode as an import side effect; restore
-// ours so the skills bundle's relative specifiers resolve.
-const generated = await import(path.join(opencodeDir, "script/generate.ts"))
+// generate.ts chdirs into packages/opencode on import; restore ours so the
+// skills bundle's relative specifiers resolve.
+const { modelsData } = await import(path.join(opencode, "script/generate.ts"))
 process.chdir(dir)
 
 import { Script } from "@opencode-ai/script"
 import { createEmbeddedSkillsBundle } from "../../bcode-browser/script/embed-skills.ts"
 import opencodePkg from "../../opencode/package.json"
 
-const skipInstall = process.argv.includes("--skip-install")
-const noBytecodeFlag = process.argv.includes("--no-bytecode")
+const flag = (name: string) => process.argv.includes(`--${name}`)
+const opt = (name: string) => (flag(name) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : undefined)
 
-// Target allowlist, matched against `<os>-<arch>[-baseline][-musl]`. Defaults
-// to the host target; release CI passes linux.
-const targetsArg = process.argv.includes("--targets")
-  ? process.argv[process.argv.indexOf("--targets") + 1]
-  : process.env.BCODE_SERVE_TARGETS
+const host = `${process.platform}-${process.arch}`
+const targets = (opt("targets") ?? host)
+  .split(",")
+  .map((t) => t.trim())
+  .filter(Boolean)
 
-const allTargets: {
-  os: string
-  arch: "arm64" | "x64"
-  abi?: "musl"
-  avx2?: false
-}[] = [
-  { os: "linux", arch: "arm64" },
-  { os: "linux", arch: "x64" },
-  { os: "linux", arch: "arm64", abi: "musl" },
-  { os: "linux", arch: "x64", abi: "musl" },
-  { os: "darwin", arch: "arm64" },
-  { os: "darwin", arch: "x64" },
-]
-
-const targetSuffixFor = (item: (typeof allTargets)[number]) =>
-  [item.os, item.arch, item.avx2 === false ? "baseline" : undefined, item.abi]
-    .filter(Boolean)
-    .join("-")
-
-const targets = targetsArg
-  ? (() => {
-      const wanted = new Set(
-        targetsArg
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter(Boolean),
-      )
-      const matched = allTargets.filter((item) => wanted.has(targetSuffixFor(item)))
-      if (matched.length === 0) {
-        console.error(
-          `No targets matched --targets ${targetsArg}. Known: ${allTargets.map(targetSuffixFor).join(", ")}`,
-        )
-        process.exit(1)
-      }
-      return matched
-    })()
-  : allTargets.filter((item) => item.os === process.platform && item.arch === process.arch && !item.abi)
-
-const embeddedSkillsFileMap = await createEmbeddedSkillsBundle(dir)
+const skills = await createEmbeddedSkillsBundle(dir)
 
 await $`rm -rf dist`
 
-if (!skipInstall) {
-  // Cross-compiling needs the other platforms' native artifacts present.
-  await $`bun install --os="*" --cpu="*" @ff-labs/fff-bun@${opencodePkg.dependencies["@ff-labs/fff-bun"]}`.cwd(
-    opencodeDir,
-  )
-  await $`bun install --os="*" --cpu="*" @parcel/watcher@${opencodePkg.dependencies["@parcel/watcher"]}`.cwd(
-    opencodeDir,
-  )
+// Cross-compiling needs every platform's native artifacts on disk. Both of these
+// are in the serve graph — fff-bun via core/filesystem/fff.bun.ts, @parcel/watcher
+// via core/filesystem/watcher.ts — and a plain install only fetches the host's.
+if (!flag("skip-install")) {
+  for (const dep of ["@ff-labs/fff-bun", "@parcel/watcher"] as const) {
+    await $`bun install --os="*" --cpu="*" ${dep}@${opencodePkg.dependencies[dep]}`.cwd(opencode)
+  }
+}
+
+// Boot the server and wait for its banner. `--version` alone would pass with a
+// broken server graph.
+//
+// The timeout has to be a racing rejection, not just a kill: killing the child
+// does not end the read loop if any descendant inherited stdout, so a hung
+// smoke test would hang the build instead of failing it.
+async function smoke(bin: string) {
+  const proc = Bun.spawn([bin, "serve", "--port", "0", "--hostname", "127.0.0.1"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, OPENCODE_SERVER_PASSWORD: "smoke-test" },
+  })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const banner = (async () => {
+    const reader = proc.stdout.getReader()
+    const decoder = new TextDecoder()
+    for (let out = ""; ; ) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error(`serve exited before listening:\n${out}\n${await new Response(proc.stderr).text()}`)
+      out += decoder.decode(value, { stream: true })
+      if (out.includes("listening on")) return out.trim().split("\n").at(-1)
+    }
+  })()
+  try {
+    return await Promise.race([
+      banner,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("serve did not print its listening banner within 60s")), 60_000)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+    // SIGKILL, not the default SIGTERM: a wedged child must not outlive us.
+    proc.kill("SIGKILL")
+    await proc.exited
+  }
 }
 
 const archives: string[] = []
 
-for (const item of targets) {
-  const targetSuffix = targetSuffixFor(item)
-  const assetName = `bcode-${targetSuffix}-serve` // release archive basename
-  const outdir = `dist/${assetName}`
-  console.log(`building ${assetName}`)
-  await $`mkdir -p ${outdir}/bin`
+for (const target of targets) {
+  const asset = `bcode-${target}-serve`
+  const bin = path.join(dir, "dist", asset, "bin/bcode")
+  const musl = /(^|-)musl(-|$)/.test(target)
+  console.log(`building ${asset}`)
 
-  const skillsPath = "bcode-skills.gen.ts"
-
-  const result = await Bun.build({
+  const built = await Bun.build({
     conditions: ["bun", "node"],
-    // The opencode tsconfig supplies the `@/*` -> packages/opencode/src/*
-    // path mapping that its own sources rely on.
-    tsconfig: path.join(opencodeDir, "tsconfig.json"),
+    // opencode's tsconfig supplies the `@/*` -> packages/opencode/src/* mapping
+    // that its own sources rely on.
+    tsconfig: path.join(opencode, "tsconfig.json"),
     external: ["node-gyp"],
     format: "esm",
     minify: true,
     sourcemap: "none",
     splitting: true,
-    bytecode: !noBytecodeFlag,
+    bytecode: !flag("no-bytecode"),
     compile: {
       autoloadBunfig: false,
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: `bun-${targetSuffix}` as any,
-      outfile: path.join(dir, outdir, "bin/bcode"),
+      target: `bun-${target}` as any,
+      outfile: bin,
       execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: {
-      [skillsPath]: embeddedSkillsFileMap,
+      // Hard requirement: skills.ts throws when this is missing in a compiled
+      // binary, rather than degrading.
+      "bcode-skills.gen.ts": skills,
+      // Must stay embedded even though this build ships no web UI. Leaving it
+      // out does NOT fail closed: Bun keeps the bare `import("opencode-web-ui.gen.ts")`
+      // in server/shared/ui.ts live and resolves it at runtime against the
+      // server's cwd. A file planted at ./node_modules/opencode-web-ui.gen.ts
+      // then executes in-process, and its default export is used as a path map
+      // that serveUIEffect reads and returns over HTTP. PUBLIC_UI_PATHS lets
+      // /site.webmanifest and the two manifest icons skip auth entirely, so that
+      // read is reachable even with a server password set. An empty stub
+      // resolves the specifier hermetically and every UI path 404s, which is
+      // what a headless server wants anyway.
+      "opencode-web-ui.gen.ts": "export default {}",
     },
-    entrypoints: ["./src/index.ts", skillsPath],
+    entrypoints: ["./src/index.ts", "bcode-skills.gen.ts", "opencode-web-ui.gen.ts"],
+    // Every consumer of these reads them behind a `typeof` guard, so a missing
+    // one degrades silently rather than throwing — hence the assertion below.
     define: {
-      FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
       OPENCODE_VERSION: `'${Script.version}'`,
-      OPENCODE_MODELS_DEV: generated.modelsData,
-      // TUI-only; defined so a stray reference cannot throw ReferenceError.
-      OTUI_TREE_SITTER_WORKER_PATH: `''`,
-      OPENCODE_WORKER_PATH: `''`,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
-      OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
-      // Populated by release CI from LMNR_PROJECT_API_KEY_OSS; empty locally.
-      // Runtime use is gated in @browser-use/bcode-browser/src/telemetry.ts.
+      OPENCODE_MODELS_DEV: modelsData,
+      // Native-binding selectors: fff-bun and @parcel/watcher each pick their
+      // .so by libc, so musl builds must say so or file watching silently dies.
+      FFF_LIBC: JSON.stringify(musl ? "musl" : "gnu"),
+      OPENCODE_LIBC: target.startsWith("linux-") ? `'${musl ? "musl" : "glibc"}'` : "''",
+      // Release CI supplies the key; empty locally. Runtime use is gated in
+      // @browser-use/bcode-browser/src/telemetry.ts.
       BCODE_DEFAULT_LMNR_KEY: JSON.stringify(process.env.BCODE_DEFAULT_LMNR_KEY ?? ""),
-      ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
     },
   })
-  if (!result.success) {
-    console.error(result.logs)
+  if (!built.success) {
+    console.error(built.logs)
     process.exit(1)
   }
 
-  // Boot the server for real, not just `--version`: a missing `define` or a
-  // module dropped from the graph would sail straight past `--version`.
-  if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = path.join(dir, outdir, "bin/bcode")
-    console.log(`Smoke test: ${assetName} serve`)
-    const proc = Bun.spawn([binaryPath, "serve", "--port", "0", "--hostname", "127.0.0.1"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, OPENCODE_SERVER_PASSWORD: "smoke-test" },
-    })
-    const listening = (async () => {
-      const reader = proc.stdout.getReader()
-      const decoder = new TextDecoder()
-      let buffered = ""
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        buffered += decoder.decode(value, { stream: true })
-        if (buffered.includes("listening on")) return buffered
-      }
-      const stderr = await new Response(proc.stderr).text()
-      throw new Error(`server exited before listening.\nstdout:\n${buffered}\nstderr:\n${stderr}`)
-    })()
-    // Timer handle is cleared in `finally`: an armed timer keeps the event loop
-    // alive, which would stall the build for the full timeout after every
-    // successful smoke test.
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-      const banner = await Promise.race([
-        listening,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("timed out after 30s")), 30_000)
-        }),
-      ])
-      console.log(`Smoke test passed: ${banner.trim().split("\n").at(-1)}`)
-    } catch (e) {
-      console.error(`Smoke test failed for ${assetName}:`, e)
-      proc.kill()
+  if (target === host) {
+    const banner = await smoke(bin)
+    // Assert a define actually landed. The banner above cannot tell: every
+    // define read upstream is `typeof`-guarded, so a dropped one just falls
+    // back to a default and the server still starts.
+    const version = (await $`${bin} --version`.text()).trim()
+    if (version !== Script.version) {
+      console.error(`define check failed: --version printed ${version}, expected ${Script.version}`)
       process.exit(1)
-    } finally {
-      clearTimeout(timer)
-      proc.kill()
-      await proc.exited
     }
+    console.log(`smoke: ${banner}`)
   }
 
   if (Script.release) {
-    // linux only, so tar for everything; add a zip branch if darwin ships.
-    await $`tar -czf ../../${assetName}.tar.gz *`.cwd(`${outdir}/bin`)
-    archives.push(`./dist/${assetName}.tar.gz`)
+    await $`tar -czf ../../${asset}.tar.gz *`.cwd(`dist/${asset}/bin`)
+    archives.push(`./dist/${asset}.tar.gz`)
   }
 }
 

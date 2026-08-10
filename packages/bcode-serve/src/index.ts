@@ -10,8 +10,10 @@
 //
 // DRIFT WARNING: the global-option and lifecycle wiring below is duplicated
 // from `packages/opencode/src/index.ts`, which stays the source of truth.
-// Options added there must be mirrored here. The build's smoke test boots
-// `serve` for real, so a missing `define` fails the build, not the deploy.
+// Options added there must be mirrored here, and nothing enforces it — the
+// build's smoke test boots `serve` for real, which catches a broken module
+// graph but not a missing option, since `.strict()` only rejects a flag at the
+// moment a caller passes one.
 
 // Must stay the FIRST import: this module sets LMNR_PROJECT_API_KEY as an
 // import side effect, before any downstream module-load code reads it. Same

@@ -147,21 +147,17 @@ jobs:
           ./packages/opencode/script/build.ts
 
       - name: Build serve-only variant and upload to release
-        # Additive: produces `bcode-linux-{arm64,x64}-serve.tar.gz` alongside the
-        # standard assets, for headless containers. Built from its own package so
-        # `packages/opencode` — forked from upstream — stays untouched, and the
-        # canonical build step above is unmodified.
+        # Additive: publishes `bcode-linux-{arm64,x64}[-musl]-serve.tar.gz` for
+        # headless containers, from its own package so the upstream-forked
+        # `packages/opencode` and the canonical step above stay untouched.
         #
-        # Runs after that step and is `continue-on-error` on purpose: this variant
-        # must never block or alter a normal release. Different asset names, so
-        # `--clobber` cannot overwrite the standard archives.
+        # `continue-on-error` so this variant can never block a normal release;
+        # its asset names differ, so `--clobber` cannot touch the standard ones.
+        # Invoked via `bun` so a lost executable bit cannot silently disable it.
         #
-        # Linux only — the only consumer is the container image. glibc + musl,
-        # matching what install-bytecode.sh can select; no baseline (non-AVX2
-        # x64), which the installer rejects with a pointer to /install.
-        #
-        # Invoked through `bun` rather than as `./...` so a lost executable bit
-        # cannot silently disable the whole step under continue-on-error.
+        # No baseline (non-AVX2 x64) target — install-bytecode.sh rejects that
+        # case with a pointer to /install rather than shipping a binary that
+        # SIGILLs.
         continue-on-error: true
         env:
           OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
@@ -173,13 +169,10 @@ jobs:
           BCODE_DEFAULT_LMNR_KEY: ${{ secrets.LMNR_PROJECT_API_KEY_OSS }}
         run: |
           # Checkout has no `ref:`, so on `workflow_dispatch` the tree is the
-          # dispatch ref (usually main), not the selected tag — while the upload
-          # still targets that tag. Publishing then would put main's code inside
-          # the tag's assets. Build only when the tree really is the tag.
-          #
-          # The canonical build step above has the same exposure; fixing that
-          # means changing `Checkout` for the whole job, which is out of scope
-          # here. Tracked separately.
+          # dispatch ref, not the selected tag, while the upload still targets
+          # that tag. Only build when the tree really is the tag. (The canonical
+          # step has the same exposure; fixing it means changing `Checkout` for
+          # the whole job, which is out of scope here.)
           TAG_SHA=$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" || true)
           HEAD_SHA=$(git rev-parse HEAD)
           if [ "$HEAD_SHA" != "$TAG_SHA" ]; then
