@@ -146,6 +146,42 @@ jobs:
         run: |
           ./packages/opencode/script/build.ts
 
+      - name: Build serve-only variant and upload to release
+        # Additive: publishes `bcode-linux-{arm64,x64}[-musl]-serve.tar.gz` for
+        # headless containers, from its own package so the upstream-forked
+        # `packages/opencode` and the canonical step above stay untouched.
+        #
+        # `continue-on-error` so this variant can never block a normal release;
+        # its asset names differ, so `--clobber` cannot touch the standard ones.
+        # Invoked via `bun` so a lost executable bit cannot silently disable it.
+        #
+        # No baseline (non-AVX2 x64) target — install-bytecode.sh rejects that
+        # case with a pointer to /install rather than shipping a binary that
+        # SIGILLs.
+        continue-on-error: true
+        env:
+          OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
+          OPENCODE_RELEASE: "1"
+          OPENCODE_CHANNEL: latest
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          BCODE_DEFAULT_LMNR_KEY: ${{ secrets.LMNR_PROJECT_API_KEY_OSS }}
+        run: |
+          # Checkout has no `ref:`, so on `workflow_dispatch` the tree is the
+          # dispatch ref, not the selected tag, while the upload still targets
+          # that tag. Only build when the tree really is the tag. (The canonical
+          # step has the same exposure; fixing it means changing `Checkout` for
+          # the whole job, which is out of scope here.)
+          TAG_SHA=$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" || true)
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$TAG_SHA" ]; then
+            echo "::warning::Skipped the serve variant: checkout $(git rev-parse --short HEAD) is not tag ${TAG}. Re-run from a state where they match to publish it."
+            exit 0
+          fi
+          bun ./packages/bcode-serve/script/build.ts \
+            --targets linux-arm64,linux-x64,linux-arm64-musl,linux-x64-musl
+
       - name: Summarise uploaded assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

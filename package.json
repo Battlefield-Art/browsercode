@@ -13,7 +13,7 @@
     "dev:stats": "bun sst shell --stage=production -- bun run --cwd packages/stats/app dev",
     "dev:storybook": "bun --cwd packages/storybook storybook",
     "lint": "oxlint",
-    "typecheck": "bun turbo typecheck --filter='@browser-use/browsercode-core...' --filter='@browser-use/bcode-browser' --filter='@browser-use/bcode-laminar'",
+    "typecheck": "bun turbo typecheck --filter='@browser-use/browsercode-core...' --filter='@browser-use/bcode-browser' --filter='@browser-use/bcode-laminar' --filter='@browser-use/bcode-serve'",
     "upgrade-opentui": "bun run script/upgrade-opentui.ts",
     "postinstall": "bun run --cwd packages/core fix-node-pty",
     "prepare": "husky",
