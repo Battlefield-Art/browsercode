@@ -164,6 +164,11 @@ const blockingProcessor = Layer.succeed(
   }),
 )
 
+const providerGetModelStarted: Array<() => void> = []
+const blockingProvider = Layer.mock(ProviderSvc.Service, {
+  getModel: () => Effect.sync(() => providerGetModelStarted.shift()?.()).pipe(Effect.andThen(Effect.never)),
+})
+
 const runtimeFlags = RuntimeFlags.layer({ experimentalEventSystem: true })
 
 const testLLMServerNode = LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })
@@ -208,7 +213,11 @@ const promptRoot = LayerNode.group([
   RuntimeFlags.node,
 ])
 
-function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makePrompt(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  provider?: "blocking"
+}) {
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
@@ -217,6 +226,9 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
   ] as const
   if (input?.processor === "blocking") {
     return LayerNode.compile(promptRoot, [...replacements, [SessionProcessor.node, blockingProcessor]])
+  }
+  if (input?.provider === "blocking") {
+    return LayerNode.compile(promptRoot, [...replacements, [ProviderSvc.node, blockingProvider]])
   }
   return LayerNode.compile(promptRoot, replacements)
 }
@@ -242,6 +254,7 @@ function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[
 const it = testEffect(makeHttp())
 const noLLMServer = testEffect(makeHttpNoLLMServer())
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
+const rolloverNoLLMServer = testEffect(makePrompt({ provider: "blocking" }))
 const withMcpInstructions = testEffect(
   makeHttp({
     mcpInstructions: [
@@ -498,6 +511,73 @@ noLLMServer.instance(
       expect(result.info.id).toBe(assistantID)
     }),
   { config: cfg },
+)
+
+rolloverNoLLMServer.instance(
+  "loop starts a new user turn after message ID rollover",
+  () =>
+    Effect.gen(function* () {
+      providerGetModelStarted.length = 0
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          providerGetModelStarted.length = 0
+        }),
+      )
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const oldUserID = MessageID.make("msg_ffffffffe001olduser")
+      const oldAssistantID = MessageID.make("msg_fffffffff001oldassistant")
+      const newUserID = MessageID.make("msg_000000001001newuser")
+      yield* sessions.updateMessage({
+        id: oldUserID,
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: 100 },
+      })
+      yield* sessions.updateMessage({
+        id: oldAssistantID,
+        role: "assistant",
+        parentID: oldUserID,
+        sessionID: chat.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: 200, completed: 201 },
+        finish: "stop",
+      })
+      yield* sessions.updateMessage({
+        id: newUserID,
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: 300 },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: newUserID,
+        sessionID: chat.id,
+        type: "text",
+        text: "continue after rollover",
+      })
+      const latest = MessageV2.latest(yield* sessions.messages({ sessionID: chat.id }))
+      expect(latest.user?.id).toBe(newUserID)
+      expect(latest.assistant?.id).toBe(oldAssistantID)
+
+      const started = defer<void>()
+      providerGetModelStarted.push(started.resolve)
+      const loop = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Effect.promise(() => started.promise), "rollover turn never started")
+      yield* Fiber.interrupt(loop)
+    }),
 )
 
 it.instance("loop exits without an LLM request for interrupted orphan tool calls", () =>
