@@ -60,6 +60,8 @@ test.each([
   ["   ", "set but empty"],
   ["not-a-url", "not a valid url"],
   ["http://evil.example/fetch", "https outside loopback"],
+  // Would otherwise pass startup and fail at the first webfetch instead.
+  ["ftp://localhost/fetch", "must be http or https"],
 ])("rejects BCODE_FETCH_USE_ENDPOINT=%p", (value, reason) => {
   process.env.BCODE_FETCH_USE_ENDPOINT = value
   try {
@@ -75,9 +77,39 @@ test.each([
   }
 })
 
-test.each(["https://proxy.example/fetch", "http://127.0.0.1:7461/fetch", "http://[::1]:7461/fetch"])(
-  "accepts BCODE_FETCH_USE_ENDPOINT=%p",
-  (value) => {
+test("rejection does not echo credentials carried in the endpoint value", () => {
+  // An endpoint can embed userinfo or a token in its query. Writing that into
+  // stderr on a typo is the same log leak this override exists to close, so the
+  // message may name the origin and nothing more.
+  process.env.BCODE_FETCH_USE_ENDPOINT = "http://user:hunter2@evil.example:8080/f?token=SECRET"
+  try {
+    let message = ""
+    try {
+      Effect.runSync(
+        Effect.gen(function* () {
+          return (yield* FetchUse.Service).enabled
+        }).pipe(Effect.provide(FetchUse.layer.pipe(Layer.provide(FetchHttpClient.layer)))),
+      )
+    } catch (e) {
+      message = String(e)
+    }
+    expect(message).toContain("https outside loopback")
+    expect(message).toContain("evil.example:8080")
+    expect(message).not.toContain("hunter2")
+    expect(message).not.toContain("SECRET")
+  } finally {
+    delete process.env.BCODE_FETCH_USE_ENDPOINT
+  }
+})
+
+test.each([
+  "https://proxy.example/fetch",
+  "http://127.0.0.1:7461/fetch",
+  "http://[::1]:7461/fetch",
+  // The whole 127/8 is loopback, and a rooted name is the same name.
+  "http://127.0.0.2:9/fetch",
+  "http://localhost./fetch",
+])("accepts BCODE_FETCH_USE_ENDPOINT=%p", (value) => {
     process.env.BCODE_FETCH_USE_ENDPOINT = value
     try {
       expect(() =>

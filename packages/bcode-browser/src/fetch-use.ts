@@ -72,15 +72,27 @@ function resolveEndpoint() {
   if (configured === undefined) return DEFAULT_ENDPOINT
   if (configured.trim() === "")
     throw new Error("BCODE_FETCH_USE_ENDPOINT is set but empty; unset it to use the default fetcher")
-  if (!URL.canParse(configured)) throw new Error(`BCODE_FETCH_USE_ENDPOINT is not a valid url: ${configured}`)
+  // The messages below name the variable and at most the destination's origin,
+  // never the value: it can carry userinfo or a token in its query, and writing
+  // that to stderr is the same leak this override exists to close. The operator
+  // can read back their own environment variable.
+  if (!URL.canParse(configured)) throw new Error("BCODE_FETCH_USE_ENDPOINT is not a valid url")
   const url = new URL(configured)
-  // Node reports the IPv6 literal with its brackets, so "::1" would never match.
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
-  if (url.protocol !== "https:" && !loopback)
+  // Checked before the loopback exemption below, which would otherwise wave
+  // through ftp://localhost and defer the failure to the first webfetch.
+  if (url.protocol !== "https:" && url.protocol !== "http:")
+    throw new Error(`BCODE_FETCH_USE_ENDPOINT must be http or https, not ${url.protocol}`)
+  if (url.protocol !== "https:" && !LOOPBACK.test(url.hostname))
     throw new Error(
-      `BCODE_FETCH_USE_ENDPOINT must use https outside loopback; refusing to send the api key in cleartext to ${configured}`,
+      `BCODE_FETCH_USE_ENDPOINT must use https outside loopback; refusing to send the api key in cleartext to ${url.origin}`,
     )
   return configured
 }
+
+// All of 127.0.0.0/8 is loopback rather than 127.0.0.1 alone, a trailing dot is
+// the same name in its rooted form, and URL reports the IPv6 literal with its
+// brackets, so "::1" would never match. Anchored and numeric so a DNS name like
+// 127.example.com is not mistaken for the subnet.
+const LOOPBACK = /^(localhost\.?|\[::1\]|127(\.\d{1,3}){3})$/
 
 export * as FetchUse from "./fetch-use"
