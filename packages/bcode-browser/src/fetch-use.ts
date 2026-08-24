@@ -32,12 +32,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
     const apiKey = process.env.BROWSER_USE_API_KEY ?? ""
-    // Overridable so a caller can mediate the request and keep the real key out
-    // of this process entirely. The default endpoint is a general-purpose URL
-    // fetcher, so anything holding the key can send it to an arbitrary host --
-    // an untrusted or injectable agent should be given a mediating endpoint and
-    // a throwaway credential instead of the real one.
-    const endpoint = process.env.BCODE_FETCH_USE_ENDPOINT || DEFAULT_ENDPOINT
+    const endpoint = resolveEndpoint()
     return Service.of({
       enabled: apiKey.length > 0,
       fetch: (url, { timeoutMs }) =>
@@ -61,5 +56,31 @@ export const layer = Layer.effect(
     })
   }),
 )
+
+// Overridable so a caller can mediate the request and keep the real key out of
+// this process entirely. The default endpoint is a general-purpose URL fetcher,
+// so anything holding the key can send it to an arbitrary host -- an untrusted
+// or injectable agent should be given a mediating endpoint and a throwaway
+// credential instead of the real one.
+//
+// Every rejection below is an operator mistake at startup, and each one would
+// otherwise put X-Browser-Use-API-Key somewhere it should not go. Set-but-empty
+// is a mistake rather than a default, because the default is the direct fetcher
+// -- the exact path someone setting this variable is trying to leave.
+function resolveEndpoint() {
+  const configured = process.env.BCODE_FETCH_USE_ENDPOINT
+  if (configured === undefined) return DEFAULT_ENDPOINT
+  if (configured.trim() === "")
+    throw new Error("BCODE_FETCH_USE_ENDPOINT is set but empty; unset it to use the default fetcher")
+  if (!URL.canParse(configured)) throw new Error(`BCODE_FETCH_USE_ENDPOINT is not a valid url: ${configured}`)
+  const url = new URL(configured)
+  // Node reports the IPv6 literal with its brackets, so "::1" would never match.
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+  if (url.protocol !== "https:" && !loopback)
+    throw new Error(
+      `BCODE_FETCH_USE_ENDPOINT must use https outside loopback; refusing to send the api key in cleartext to ${configured}`,
+    )
+  return configured
+}
 
 export * as FetchUse from "./fetch-use"

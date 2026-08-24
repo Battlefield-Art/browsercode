@@ -52,6 +52,47 @@ test("BCODE_FETCH_USE_ENDPOINT redirects the request and forwards the target url
   }
 })
 
+// The endpoint carries the api key, so a bad value leaks a credential rather
+// than merely failing. Loopback http is allowed because a mediating proxy on the
+// same host is the normal local arrangement.
+test.each([
+  ["", "set but empty"],
+  ["   ", "set but empty"],
+  ["not-a-url", "not a valid url"],
+  ["http://evil.example/fetch", "https outside loopback"],
+])("rejects BCODE_FETCH_USE_ENDPOINT=%p", (value, reason) => {
+  process.env.BCODE_FETCH_USE_ENDPOINT = value
+  try {
+    expect(() =>
+      Effect.runSync(
+        Effect.gen(function* () {
+          return (yield* FetchUse.Service).enabled
+        }).pipe(Effect.provide(FetchUse.layer.pipe(Layer.provide(FetchHttpClient.layer)))),
+      ),
+    ).toThrow(new RegExp(reason.replace(/ /g, "\\s")))
+  } finally {
+    delete process.env.BCODE_FETCH_USE_ENDPOINT
+  }
+})
+
+test.each(["https://proxy.example/fetch", "http://127.0.0.1:7461/fetch", "http://[::1]:7461/fetch"])(
+  "accepts BCODE_FETCH_USE_ENDPOINT=%p",
+  (value) => {
+    process.env.BCODE_FETCH_USE_ENDPOINT = value
+    try {
+      expect(() =>
+        Effect.runSync(
+          Effect.gen(function* () {
+            return (yield* FetchUse.Service).enabled
+          }).pipe(Effect.provide(FetchUse.layer.pipe(Layer.provide(FetchHttpClient.layer)))),
+        ),
+      ).not.toThrow()
+    } finally {
+      delete process.env.BCODE_FETCH_USE_ENDPOINT
+    }
+  },
+)
+
 test.skipIf(!haveKey)("live: fetches httpbin and returns body + content-type", async () => {
   const result = await Effect.gen(function* () {
     return yield* (yield* FetchUse.Service).fetch("https://httpbin.org/get", { timeoutMs: 30_000 })
