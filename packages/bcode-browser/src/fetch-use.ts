@@ -6,7 +6,7 @@
 import { Context, Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 
-const ENDPOINT = "https://fetch.browser-use.com/fetch"
+const DEFAULT_ENDPOINT = "https://fetch.browser-use.com/fetch"
 
 export interface FetchResult {
   readonly body: ArrayBuffer
@@ -32,11 +32,17 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
     const apiKey = process.env.BROWSER_USE_API_KEY ?? ""
+    // Overridable so a caller can mediate the request and keep the real key out
+    // of this process entirely. The default endpoint is a general-purpose URL
+    // fetcher, so anything holding the key can send it to an arbitrary host --
+    // an untrusted or injectable agent should be given a mediating endpoint and
+    // a throwaway credential instead of the real one.
+    const endpoint = process.env.BCODE_FETCH_USE_ENDPOINT || DEFAULT_ENDPOINT
     return Service.of({
       enabled: apiKey.length > 0,
       fetch: (url, { timeoutMs }) =>
         Effect.gen(function* () {
-          const request = yield* HttpClientRequest.post(ENDPOINT).pipe(
+          const request = yield* HttpClientRequest.post(endpoint).pipe(
             HttpClientRequest.setHeaders({ "Content-Type": "application/json", "X-Browser-Use-API-Key": apiKey }),
             HttpClientRequest.bodyJson({ url, timeout_ms: timeoutMs }),
           )
