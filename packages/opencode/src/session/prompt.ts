@@ -1108,9 +1108,22 @@ const layer = Layer.effect(
               (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
             ) ?? false
 
+          // "unknown" is every mapper's fallback for a finish reason we could not
+          // interpret, and the AI SDK reports a stream that closed without any
+          // finish chunk at all as "other", which maps here too. Neither means the
+          // model was done, so resample the turn like "tool-calls" instead of
+          // exiting as a clean completion. Exiting here silently truncated runs
+          // mid-task: the error check below already excludes "unknown", so nothing
+          // was recorded anywhere.
+          if (lastAssistant?.finish === "unknown")
+            yield* Effect.logWarning("resampling turn that ended with an unmapped finish reason", {
+              "session.id": sessionID,
+              messageID: lastAssistant.id,
+            })
+
           if (
             lastAssistant?.finish &&
-            !["tool-calls"].includes(lastAssistant.finish) &&
+            !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
             lastAssistant.parentID === lastUser.id
           ) {
