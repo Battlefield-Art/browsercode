@@ -6,7 +6,7 @@
 import { Context, Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 
-const ENDPOINT = "https://fetch.browser-use.com/fetch"
+const DEFAULT_ENDPOINT = "https://fetch.browser-use.com/fetch"
 
 export interface FetchResult {
   readonly body: ArrayBuffer
@@ -32,11 +32,12 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
     const apiKey = process.env.BROWSER_USE_API_KEY ?? ""
+    const endpoint = resolveEndpoint()
     return Service.of({
       enabled: apiKey.length > 0,
       fetch: (url, { timeoutMs }) =>
         Effect.gen(function* () {
-          const request = yield* HttpClientRequest.post(ENDPOINT).pipe(
+          const request = yield* HttpClientRequest.post(endpoint).pipe(
             HttpClientRequest.setHeaders({ "Content-Type": "application/json", "X-Browser-Use-API-Key": apiKey }),
             HttpClientRequest.bodyJson({ url, timeout_ms: timeoutMs }),
           )
@@ -55,5 +56,43 @@ export const layer = Layer.effect(
     })
   }),
 )
+
+// Overridable so a caller can mediate the request and keep the real key out of
+// this process entirely. The default endpoint is a general-purpose URL fetcher,
+// so anything holding the key can send it to an arbitrary host -- an untrusted
+// or injectable agent should be given a mediating endpoint and a throwaway
+// credential instead of the real one.
+//
+// Every rejection below is an operator mistake at startup, and each one would
+// otherwise put X-Browser-Use-API-Key somewhere it should not go. Set-but-empty
+// is a mistake rather than a default, because the default is the direct fetcher
+// -- the exact path someone setting this variable is trying to leave.
+function resolveEndpoint() {
+  const configured = process.env.BCODE_FETCH_USE_ENDPOINT
+  if (configured === undefined) return DEFAULT_ENDPOINT
+  if (configured.trim() === "")
+    throw new Error("BCODE_FETCH_USE_ENDPOINT is set but empty; unset it to use the default fetcher")
+  // The messages below name the variable and at most the destination's origin,
+  // never the value: it can carry userinfo or a token in its query, and writing
+  // that to stderr is the same leak this override exists to close. The operator
+  // can read back their own environment variable.
+  if (!URL.canParse(configured)) throw new Error("BCODE_FETCH_USE_ENDPOINT is not a valid url")
+  const url = new URL(configured)
+  // Checked before the loopback exemption below, which would otherwise wave
+  // through ftp://localhost and defer the failure to the first webfetch.
+  if (url.protocol !== "https:" && url.protocol !== "http:")
+    throw new Error(`BCODE_FETCH_USE_ENDPOINT must be http or https, not ${url.protocol}`)
+  if (url.protocol !== "https:" && !LOOPBACK.test(url.hostname))
+    throw new Error(
+      `BCODE_FETCH_USE_ENDPOINT must use https outside loopback; refusing to send the api key in cleartext to ${url.origin}`,
+    )
+  return configured
+}
+
+// All of 127.0.0.0/8 is loopback rather than 127.0.0.1 alone, a trailing dot is
+// the same name in its rooted form, and URL reports the IPv6 literal with its
+// brackets, so "::1" would never match. Anchored and numeric so a DNS name like
+// 127.example.com is not mistaken for the subnet.
+const LOOPBACK = /^(localhost\.?|\[::1\]|127(\.\d{1,3}){3})$/
 
 export * as FetchUse from "./fetch-use"
