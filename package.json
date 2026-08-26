@@ -60,7 +60,7 @@
       "@solid-primitives/storage": "4.3.3",
       "@tailwindcss/vite": "4.1.11",
       "diff": "8.0.2",
-      "dompurify": "3.4.11",
+      "dompurify": "3.4.13",
       "drizzle-kit": "1.0.0-rc.2",
       "drizzle-orm": "1.0.0-rc.2",
       "effect": "4.0.0-beta.83",
@@ -147,8 +147,8 @@
     "@opentelemetry/sdk-trace-base": "2.9.0",
     "@opentelemetry/resources": "2.9.0",
     "@opentelemetry/sdk-trace-node": "2.9.0",
-    "astro": "6.4.8",
-    "@astrojs/starlight": "0.40.0"
+    "astro": "7.1.0",
+    "@astrojs/starlight": "0.41.7"
   },
   "patchedDependencies": {
     "@ff-labs/fff-bun@0.9.3": "patches/@ff-labs%2Ffff-bun@0.9.3.patch",
