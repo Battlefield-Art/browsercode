@@ -21,7 +21,7 @@ export default defineConfig({
     // when unset (plain `astro build`) this is undefined and the adapter falls
     // back to its default config detection.
     configPath: process.env.SST_WRANGLER_PATH,
-    // @astrojs/cloudflare v13 defaults to prerendering in the workerd runtime,
+    // @astrojs/cloudflare v13+ defaults to prerendering in the workerd runtime,
     // which lacks Node built-ins (path/fs/url) that Astro/Zod internals import.
     // Prerender in Node instead, matching the previous (v12) behavior.
     prerenderEnvironment: "node",
