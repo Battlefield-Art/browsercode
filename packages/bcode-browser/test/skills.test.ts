@@ -17,6 +17,10 @@ test("resolveSkillsDir materializes skills with {{SKILLS_DIR}} substituted", asy
     const browser = (await fs.readFile(path.join(dir, "browser-execute", "SKILL.md"), "utf8")).replaceAll("\\", "/")
     expect(browser).not.toContain("{{SKILLS_DIR}}")
     expect(browser).toContain(`${dir.replaceAll("\\", "/")}/`)
+    expect(browser).toContain('fetch("https://api.browser-use.com/api/v4/browsers"')
+    expect(browser).toContain("fetch(`https://api.browser-use.com/api/v4/browsers/${id}`")
+    expect(browser).toContain("https://docs.browser-use.com/cloud/openapi/v4.json")
+    expect(browser).not.toContain("https://api.browser-use.com/api/v3")
   } finally {
     await fs.rm(dataDir, { recursive: true, force: true })
   }
