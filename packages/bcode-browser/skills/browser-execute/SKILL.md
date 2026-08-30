@@ -66,12 +66,12 @@ Choose when the computer has no browser or to work in the background.
 
 ```js
 // Provision and connect to a cloud browser
-const r = await fetch("https://api.browser-use.com/api/v3/browsers", {
+const r = await fetch("https://api.browser-use.com/api/v4/browsers", {
   method: "POST",
   headers: { "X-Browser-Use-API-Key": process.env.BROWSER_USE_API_KEY, "Content-Type": "application/json" },
   body: "{}",
 })
-// Additional options: fetch https://docs.browser-use.com/cloud/api-v3/browsers/create-browser-session
+// Additional options: fetch https://docs.browser-use.com/cloud/openapi/v4.json
 const { id, cdpUrl, liveUrl } = await r.json()
 const ver = await fetch(`${cdpUrl}/json/version`).then(r => r.json())
 await session.connect({ wsUrl: ver.webSocketDebuggerUrl })
@@ -80,7 +80,7 @@ console.log("liveUrl for the user to watch:", liveUrl)
 
 ```js
 // Browser Use cloud will eventually close idle browsers. An explicit stop frees the slot:
-await fetch(`https://api.browser-use.com/api/v3/browsers/${id}`, {
+await fetch(`https://api.browser-use.com/api/v4/browsers/${id}`, {
   method: "PATCH",
   headers: { "X-Browser-Use-API-Key": process.env.BROWSER_USE_API_KEY, "Content-Type": "application/json" },
   body: JSON.stringify({ action: "stop" }),
